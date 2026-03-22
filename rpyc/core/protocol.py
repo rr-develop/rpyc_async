@@ -314,6 +314,9 @@ class Connection(object):
                     if self._config.get("logger"):
                         self._config["logger"].debug(f"[enable_asyncio_serving] Received data, dispatching...")
                     self._dispatch(data)
+                    # Notify any threads waiting in serve()
+                    with self._recv_event:
+                        self._recv_event.notify_all()
                 except EOFError:
                     if self._config.get("logger"):
                         self._config["logger"].debug(f"[enable_asyncio_serving] EOF, closing connection")
@@ -675,7 +678,9 @@ class Connection(object):
         if msg == consts.MSG_REQUEST:
             if self._bind_threads:
                 self._get_thread()._occupation_count += 1
-            else:
+            elif not self._asyncio_enabled:
+                # Only release lock if NOT using asyncio serving
+                # (asyncio serving doesn't use the lock - event loop serializes)
                 self._recvlock.release()
             seq, args = brine.load(data[1:])
 
@@ -717,10 +722,10 @@ class Connection(object):
                 seq, args = brine.load(data[1:])
                 obj = self._unbox(args)
                 self._seq_request_callback(msg, seq, False, obj)
-                if not self._bind_threads:
+                if not self._bind_threads and not self._asyncio_enabled:
                     self._recvlock.release()  # releasing here fixes race condition with AsyncResult.wait
             elif msg == consts.MSG_EXCEPTION:
-                if not self._bind_threads:
+                if not self._bind_threads and not self._asyncio_enabled:
                     self._recvlock.release()
                 seq, args = brine.load(data[1:])
                 obj = self._unbox_exc(args)
@@ -732,10 +737,10 @@ class Connection(object):
                 seq, args = brine.load(data[1:])
                 obj = self._unbox(args)
                 self._seq_request_callback(msg, seq, False, obj)
-                if not self._bind_threads:
+                if not self._bind_threads and not self._asyncio_enabled:
                     self._recvlock.release()
             elif msg == consts.MSG_ASYNC_EXCEPTION:
-                if not self._bind_threads:
+                if not self._bind_threads and not self._asyncio_enabled:
                     self._recvlock.release()
                 seq, args = brine.load(data[1:])
                 obj = self._unbox_exc(args)

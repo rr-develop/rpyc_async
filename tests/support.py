@@ -7,6 +7,7 @@ import warnings
 import sys
 import contextlib
 import unittest
+import socket
 
 
 @contextlib.contextmanager
@@ -43,3 +44,21 @@ def import_module(name, deprecated=False, *, required_on=(), fromlist=()):
             if sys.platform.startswith(tuple(required_on)):
                 raise
             raise unittest.SkipTest(str(msg))
+
+
+def get_free_port():
+    """
+    Get a free port by binding to port 0 and letting the OS assign one.
+
+    Returns:
+        int: An available port number
+
+    Note:
+        There is a small race condition where the port could be taken between
+        when we release it and when it's used, but this is unlikely in practice.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+    return port

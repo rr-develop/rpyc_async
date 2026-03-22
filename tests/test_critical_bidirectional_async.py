@@ -19,6 +19,7 @@ import rpyc
 from rpyc.utils.async_server import AsyncioServer
 from threading import Thread
 import time
+from tests.support import get_free_port
 
 
 class ServerService(rpyc.Service):
@@ -98,6 +99,9 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Start AsyncioServer in background event loop."""
+        # Get free port dynamically to avoid conflicts
+        cls.server_port = get_free_port()
+
         # Create event loop for server
         cls.server_loop = asyncio.new_event_loop()
 
@@ -105,7 +109,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             cls.server = AsyncioServer(
                 ServerService,
                 hostname='localhost',
-                port=18870,
+                port=cls.server_port,
                 protocol_config={
                     'allow_all_attrs': True,
                     'allow_public_attrs': True,
@@ -137,7 +141,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
         """Test simple async call works (baseline)."""
         async def test():
             # Connect to server
-            server_conn = rpyc.connect("localhost", 18870)
+            server_conn = rpyc.connect("localhost", self.server_port)
 
             try:
                 # Enable asyncio serving on client side
@@ -167,7 +171,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             print("="*60)
 
             # Connect to server
-            server_conn = rpyc.connect("localhost", 18870)
+            server_conn = rpyc.connect("localhost", self.server_port)
 
             try:
                 # Enable asyncio serving on server connection
@@ -215,7 +219,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             print("CRITICAL TEST: Bidirectional async with recursion (depth=5)")
             print("="*60)
 
-            server_conn = rpyc.connect("localhost", 18870)
+            server_conn = rpyc.connect("localhost", self.server_port)
 
             try:
                 loop = asyncio.get_running_loop()
@@ -256,7 +260,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             initial_thread_count = threading.active_count()
             print(f"\n[TEST] Initial thread count: {initial_thread_count}")
 
-            server_conn = rpyc.connect("localhost", 18870)
+            server_conn = rpyc.connect("localhost", self.server_port)
 
             try:
                 loop = asyncio.get_running_loop()
