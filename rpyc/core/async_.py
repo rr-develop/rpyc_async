@@ -111,3 +111,73 @@ class AsyncResult(object):
             raise self._obj
         else:
             return self._obj
+
+    # ═══════════════════════════════════════════════════════════════
+    # Asyncio Support (v5.1)
+    # ═══════════════════════════════════════════════════════════════
+
+    def __await__(self):
+        """
+        Make AsyncResult awaitable in async context.
+
+        This allows using AsyncResult with await syntax:
+            result = await conn.root.async_method()
+
+        Returns:
+            Result value if ready, otherwise waits asynchronously.
+
+        Raises:
+            Exception: If remote call raised exception
+
+        Example:
+            async def main():
+                conn = rpyc.connect("localhost", 18861)
+                conn.enable_asyncio_serving()
+
+                # Can now await!
+                result = await conn.root.async_method()
+                print(result)
+        """
+        import asyncio
+
+        # Fast path: result already ready
+        if self._is_ready:
+            if self._is_exc:
+                # Exception ready - raise it
+                async def _raise_exc():
+                    raise self._obj
+                return _raise_exc().__await__()
+            else:
+                # Value ready - return it
+                async def _return_value():
+                    return self._obj
+                return _return_value().__await__()
+
+        # Slow path: result not ready yet
+        # Create a Future and register callback
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
+        def on_result(async_res):
+            """Callback when result becomes ready."""
+            if future.done():
+                return  # Already resolved (timeout/cancel)
+
+            if async_res._is_exc:
+                # Exception - set exception on future
+                loop.call_soon_threadsafe(
+                    future.set_exception,
+                    async_res._obj
+                )
+            else:
+                # Success - set result on future
+                loop.call_soon_threadsafe(
+                    future.set_result,
+                    async_res._obj
+                )
+
+        # Register callback
+        self.add_callback(on_result)
+
+        # Return future's awaitable
+        return future.__await__()
