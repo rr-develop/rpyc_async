@@ -483,12 +483,13 @@ class Connection(object):
             # ═══════════════════════════════════════════════════
             # NEW (v5.1): Attach async metadata to proxy
             # ═══════════════════════════════════════════════════
+            # Use object.__setattr__ to avoid triggering netref's __setattr__
             if flags & consts.FLAGS_ASYNC:
                 # Mark proxy as async
                 # This metadata is used by netref for handler selection
-                proxy.____is_async__ = True
+                object.__setattr__(proxy, "____is_async__", True)
             else:
-                proxy.____is_async__ = False
+                object.__setattr__(proxy, "____is_async__", False)
 
             return proxy
         raise ValueError(f"invalid label {label!r}")
@@ -680,13 +681,19 @@ class Connection(object):
             needs_async = self._needs_async_dispatch(msg, args)
 
             if needs_async and self._asyncio_enabled and self._asyncio_loop:
-                # ASYNC DISPATCH PIPELINE
+                # ASYNC DISPATCH PIPELINE (with event loop)
                 import asyncio
                 asyncio.run_coroutine_threadsafe(
                     self._dispatch_request_async(seq, args),
                     self._asyncio_loop
                 )
                 # Returns immediately - does NOT block!
+            elif needs_async:
+                # ASYNC DISPATCH (without event loop - create temporary one)
+                # This allows async methods to work even without enable_asyncio_serving()
+                import asyncio
+                asyncio.run(self._dispatch_request_async(seq, args))
+                # Blocks until coroutine completes
             else:
                 # SYNC DISPATCH (existing behavior)
                 self._dispatch_request(seq, args)

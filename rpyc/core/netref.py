@@ -18,7 +18,7 @@ DELETED_ATTRS = frozenset([
 
 """the set of attributes that are local to the netref object"""
 LOCAL_ATTRS = frozenset([
-    '____conn__', '____id_pack__', '____refcount__', '__class__', '__cmp__', '__del__', '__delattr__',
+    '____conn__', '____id_pack__', '____refcount__', '____is_async__', '__class__', '__cmp__', '__del__', '__delattr__',
     '__dir__', '__doc__', '__getattr__', '__getattribute__', '__hash__', '__instancecheck__',
     '__init__', '__metaclass__', '__module__', '__new__', '__reduce__',
     '__reduce_ex__', '__repr__', '__setattr__', '__slots__', '__str__',
@@ -113,10 +113,10 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
     __slots__ = ["____conn__", "____id_pack__", "__weakref__", "____refcount__", "____is_async__"]
 
     def __init__(self, conn, id_pack):
-        self.____conn__ = conn
-        self.____id_pack__ = id_pack
-        self.____refcount__ = 1
-        self.____is_async__ = False  # NEW (v5.1): Set by _unbox() if FLAGS_ASYNC
+        object.__setattr__(self, "____conn__", conn)
+        object.__setattr__(self, "____id_pack__", id_pack)
+        object.__setattr__(self, "____refcount__", 1)
+        object.__setattr__(self, "____is_async__", False)  # NEW (v5.1): Set by _unbox() if FLAGS_ASYNC
 
     def __del__(self):
         try:
@@ -245,8 +245,8 @@ def _make_method(name, doc):
             is_async = getattr(_self, '____is_async__', False)
 
             if is_async:
-                # Use async handler
-                return syncreq(_self, consts.HANDLE_ASYNC_CALL, args, kwargs)
+                # Use async request - returns AsyncResult (awaitable!)
+                return asyncreq(_self, consts.HANDLE_ASYNC_CALL, args, kwargs)
             else:
                 # Use sync handler (existing behavior)
                 return syncreq(_self, consts.HANDLE_CALL, args, kwargs)
