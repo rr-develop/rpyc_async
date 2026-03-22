@@ -94,48 +94,55 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
     CRITICAL TEST: Bidirectional async with recursion.
 
     This test MUST PASS for the implementation to be valid.
+
+    Each test gets its own isolated server to prevent race conditions.
     """
 
-    @classmethod
-    def setUpClass(cls):
-        """Start AsyncioServer in background event loop."""
+    def setUp(self):
+        """Start AsyncioServer in background event loop for this test."""
         # Get free port dynamically to avoid conflicts
-        cls.server_port = get_free_port()
+        self.server_port = get_free_port()
 
         # Create event loop for server
-        cls.server_loop = asyncio.new_event_loop()
+        self.server_loop = asyncio.new_event_loop()
 
         async def run_server():
-            cls.server = AsyncioServer(
+            self.server = AsyncioServer(
                 ServerService,
                 hostname='localhost',
-                port=cls.server_port,
+                port=self.server_port,
                 protocol_config={
                     'allow_all_attrs': True,
                     'allow_public_attrs': True,
                 }
             )
-            await cls.server.start()
+            await self.server.start()
 
         # Start server in background thread with its own event loop
         def start_server():
-            asyncio.set_event_loop(cls.server_loop)
-            cls.server_loop.run_until_complete(run_server())
-            cls.server_loop.run_forever()
+            asyncio.set_event_loop(self.server_loop)
+            self.server_loop.run_until_complete(run_server())
+            self.server_loop.run_forever()
 
-        cls.server_thread = Thread(target=start_server, daemon=True)
-        cls.server_thread.start()
-        time.sleep(0.5)
+        self.server_thread = Thread(target=start_server, daemon=True)
+        self.server_thread.start()
+        time.sleep(0.5)  # Give server time to start
 
-    @classmethod
-    def tearDownClass(cls):
-        """Stop server."""
+    def tearDown(self):
+        """Stop server after this test."""
         async def stop_server():
-            await cls.server.close()
+            await self.server.close()
 
-        # Schedule close and stop loop
-        asyncio.run_coroutine_threadsafe(stop_server(), cls.server_loop)
-        cls.server_loop.call_soon_threadsafe(cls.server_loop.stop)
+        # Schedule close and wait for it
+        future = asyncio.run_coroutine_threadsafe(stop_server(), self.server_loop)
+        try:
+            future.result(timeout=2.0)  # Wait for clean shutdown
+        except:
+            pass  # Ignore timeout errors on shutdown
+
+        # Stop loop
+        self.server_loop.call_soon_threadsafe(self.server_loop.stop)
+        time.sleep(0.1)  # Brief pause for cleanup
 
     def test_simple_async_call_first(self):
         """Test simple async call works (baseline)."""
