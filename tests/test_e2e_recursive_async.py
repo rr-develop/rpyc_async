@@ -15,7 +15,7 @@ import unittest
 import asyncio
 import time
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 from threading import Thread
 from tests.support import get_free_port
 
@@ -85,28 +85,48 @@ class RecursiveService(rpyc.Service):
 class TestE2ERecursiveAsync(unittest.TestCase):
     """Test E2E recursive async calls."""
 
-    @classmethod
-    def setUpClass(cls):
-        """Start RPyC server in background thread."""
+    def setUp(self):
+        """Start AsyncioServer in background event loop for this test."""
         # Get free port dynamically to avoid conflicts
-        cls.port = get_free_port()
+        self.port = get_free_port()
 
-        cls.server = ThreadedServer(
-            RecursiveService,
-            port=cls.port,
-            protocol_config={'allow_all_attrs': True}
-        )
+        # Create event loop for server
+        self.server_loop = asyncio.new_event_loop()
 
-        cls.server_thread = Thread(target=cls.server.start, daemon=True)
-        cls.server_thread.start()
+        async def run_server():
+            self.server = AsyncioServer(
+                RecursiveService,
+                hostname='localhost',
+                port=self.port,
+                protocol_config={'allow_all_attrs': True}
+            )
+            await self.server.start()
 
-        # Wait for server to start
+        # Start server in background thread with its own event loop
+        def start_server():
+            asyncio.set_event_loop(self.server_loop)
+            self.server_loop.run_until_complete(run_server())
+            self.server_loop.run_forever()
+
+        self.server_thread = Thread(target=start_server, daemon=True)
+        self.server_thread.start()
         time.sleep(0.5)
 
-    @classmethod
-    def tearDownClass(cls):
-        """Stop RPyC server."""
-        cls.server.close()
+    def tearDown(self):
+        """Stop RPyC server after this test."""
+        async def stop_server():
+            await self.server.close()
+
+        # Schedule close and wait
+        future = asyncio.run_coroutine_threadsafe(stop_server(), self.server_loop)
+        try:
+            future.result(timeout=2.0)
+        except:
+            pass
+
+        # Stop loop
+        self.server_loop.call_soon_threadsafe(self.server_loop.stop)
+        time.sleep(0.1)
 
     def test_recursive_countdown_depth_10(self):
         """Test recursive async countdown to depth 10."""
@@ -114,6 +134,8 @@ class TestE2ERecursiveAsync(unittest.TestCase):
             conn = rpyc.connect("localhost", self.port)
 
             try:
+                loop = asyncio.get_running_loop()
+                conn.enable_asyncio_serving(loop=loop)
                 result = await conn.root.async_countdown(10)
 
                 # Should return [10, 9, 8, ..., 1, 0]
@@ -121,6 +143,7 @@ class TestE2ERecursiveAsync(unittest.TestCase):
                 expected = list(range(10, -1, -1))
                 self.assertEqual(list(result), expected)
             finally:
+                conn.disable_asyncio_serving()
                 conn.close()
 
         asyncio.run(test())
@@ -131,6 +154,8 @@ class TestE2ERecursiveAsync(unittest.TestCase):
             conn = rpyc.connect("localhost", self.port)
 
             try:
+                loop = asyncio.get_running_loop()
+                conn.enable_asyncio_serving(loop=loop)
                 # Fibonacci(10) = 55
                 result = await conn.root.async_fibonacci(10)
                 self.assertEqual(result, 55)
@@ -139,6 +164,7 @@ class TestE2ERecursiveAsync(unittest.TestCase):
                 result = await conn.root.async_fibonacci(5)
                 self.assertEqual(result, 5)
             finally:
+                conn.disable_asyncio_serving()
                 conn.close()
 
         asyncio.run(test())
@@ -149,6 +175,8 @@ class TestE2ERecursiveAsync(unittest.TestCase):
             conn = rpyc.connect("localhost", self.port)
 
             try:
+                loop = asyncio.get_running_loop()
+                conn.enable_asyncio_serving(loop=loop)
                 # 5! = 120
                 result = await conn.root.async_factorial(5)
                 self.assertEqual(result, 120)
@@ -157,6 +185,7 @@ class TestE2ERecursiveAsync(unittest.TestCase):
                 result = await conn.root.async_factorial(10)
                 self.assertEqual(result, 3628800)
             finally:
+                conn.disable_asyncio_serving()
                 conn.close()
 
         asyncio.run(test())
@@ -167,11 +196,14 @@ class TestE2ERecursiveAsync(unittest.TestCase):
             conn = rpyc.connect("localhost", self.port)
 
             try:
+                loop = asyncio.get_running_loop()
+                conn.enable_asyncio_serving(loop=loop)
                 result = await conn.root.async_countdown(20)
 
                 expected = list(range(20, -1, -1))
                 self.assertEqual(list(result), expected)
             finally:
+                conn.disable_asyncio_serving()
                 conn.close()
 
         asyncio.run(test())
