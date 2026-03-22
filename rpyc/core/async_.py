@@ -154,7 +154,7 @@ class AsyncResult(object):
                 return _return_value().__await__()
 
         # Slow path: result not ready yet
-        # Create a Future and register callback
+        # Need to serve connection until result arrives
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
@@ -178,6 +178,22 @@ class AsyncResult(object):
 
         # Register callback
         self.add_callback(on_result)
+
+        # Start background task to serve connection until result ready
+        async def serve_until_ready():
+            """Serve connection in background until result arrives."""
+            while not future.done() and not self._is_ready:
+                # Poll connection for incoming messages
+                await asyncio.sleep(0.001)  # Small delay to prevent CPU spinning
+                try:
+                    # Try to serve one message (non-blocking)
+                    self._conn.poll_all()
+                except Exception:
+                    # Connection closed or error
+                    break
+
+        # Launch background serving task
+        asyncio.create_task(serve_until_ready())
 
         # Return future's awaitable
         return future.__await__()

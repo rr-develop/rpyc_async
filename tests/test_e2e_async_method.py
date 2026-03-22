@@ -77,10 +77,11 @@ class TestE2EAsyncMethod(unittest.TestCase):
         """Test basic async method call."""
         async def test():
             conn = rpyc.connect("localhost", 18861)
-            conn.enable_asyncio_serving()
+            # NOTE: Client does NOT need enable_asyncio_serving() for awaiting results
+            # enable_asyncio_serving() is only needed when server calls back to client
 
             try:
-                # Call async method
+                # Call async method and await result
                 result = await conn.root.async_hello("world")
                 self.assertEqual(result, "Hello, world!")
             finally:
@@ -92,7 +93,6 @@ class TestE2EAsyncMethod(unittest.TestCase):
         """Test async method with multiple arguments."""
         async def test():
             conn = rpyc.connect("localhost", 18861)
-            conn.enable_asyncio_serving()
 
             try:
                 result = await conn.root.async_add(5, 3)
@@ -106,7 +106,6 @@ class TestE2EAsyncMethod(unittest.TestCase):
         """Test async method that raises exception."""
         async def test():
             conn = rpyc.connect("localhost", 18861)
-            conn.enable_asyncio_serving()
 
             try:
                 with self.assertRaises(ValueError) as ctx:
@@ -122,7 +121,6 @@ class TestE2EAsyncMethod(unittest.TestCase):
         """Test calling both sync and async methods."""
         async def test():
             conn = rpyc.connect("localhost", 18861)
-            conn.enable_asyncio_serving()
 
             try:
                 # Call sync method (should work normally)
@@ -141,7 +139,6 @@ class TestE2EAsyncMethod(unittest.TestCase):
         """Test multiple concurrent async method calls."""
         async def test():
             conn = rpyc.connect("localhost", 18861)
-            conn.enable_asyncio_serving()
 
             try:
                 # Launch multiple async calls concurrently
