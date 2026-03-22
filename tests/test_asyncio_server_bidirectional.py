@@ -100,6 +100,9 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Start AsyncioServer in background task."""
+        # Get free port dynamically to avoid conflicts
+        cls.port = get_free_port()
+
         # We need to run server in the test's event loop
         # This will be done in each test method
         pass
@@ -116,7 +119,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
             server = AsyncioServer(
                 ServerService,
                 hostname='localhost',
-                port=18880,
+                port=cls.port,
                 protocol_config={'allow_all_attrs': True}
             )
 
@@ -128,7 +131,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
                 await asyncio.sleep(0.5)
 
                 # Connect client
-                server_conn = rpyc.connect("localhost", 18880)
+                server_conn = rpyc.connect("localhost", self.port)
 
                 try:
                     # Simple async call
@@ -160,7 +163,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
             server = AsyncioServer(
                 ServerService,
                 hostname='localhost',
-                port=18881,
+                port=self.port,
                 protocol_config={
                     'allow_all_attrs': True,
                     'allow_public_attrs': True,
@@ -174,7 +177,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
                 await asyncio.sleep(0.5)
 
                 # Connect to server
-                server_conn = rpyc.connect("localhost", 18881)
+                server_conn = rpyc.connect("localhost", self.port)
 
                 try:
                     # Enable asyncio serving on client connection
@@ -229,7 +232,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
             server = AsyncioServer(
                 ServerService,
                 hostname='localhost',
-                port=18882,
+                port=self.port,
                 protocol_config={
                     'allow_all_attrs': True,
                     'allow_public_attrs': True,
@@ -241,7 +244,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
             try:
                 await asyncio.sleep(0.5)
 
-                server_conn = rpyc.connect("localhost", 18882)
+                server_conn = rpyc.connect("localhost", self.port)
 
                 try:
                     loop = asyncio.get_running_loop()
@@ -288,7 +291,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
             server = AsyncioServer(
                 ServerService,
                 hostname='localhost',
-                port=18883,
+                port=self.port,
                 protocol_config={'allow_all_attrs': True}
             )
 
@@ -308,7 +311,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
                     f"Too many threads created! Initial: {initial_thread_count}, Now: {after_start_count}"
                 )
 
-                server_conn = rpyc.connect("localhost", 18883)
+                server_conn = rpyc.connect("localhost", self.port)
 
                 try:
                     loop = asyncio.get_running_loop()
@@ -372,7 +375,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
             server = AsyncioServer(
                 ServerService,
                 hostname='localhost',
-                port=18884,
+                port=self.port,
                 protocol_config={'allow_all_attrs': True}
             )
 
@@ -385,7 +388,7 @@ class TestAsyncioServerBidirectional(unittest.TestCase):
                 current_loop = asyncio.get_running_loop()
                 self.assertIs(current_loop, main_loop, "Event loop changed!")
 
-                server_conn = rpyc.connect("localhost", 18884)
+                server_conn = rpyc.connect("localhost", self.port)
 
                 try:
                     # Enable asyncio serving with current loop

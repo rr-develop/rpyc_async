@@ -17,6 +17,7 @@ import time
 import rpyc
 from rpyc.utils.server import ThreadedServer
 from threading import Thread
+from tests.support import get_free_port
 
 
 class RecursiveService(rpyc.Service):
@@ -87,9 +88,12 @@ class TestE2ERecursiveAsync(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Start RPyC server in background thread."""
+        # Get free port dynamically to avoid conflicts
+        cls.port = get_free_port()
+
         cls.server = ThreadedServer(
             RecursiveService,
-            port=18867,
+            port=cls.port,
             protocol_config={'allow_all_attrs': True}
         )
 
@@ -107,7 +111,7 @@ class TestE2ERecursiveAsync(unittest.TestCase):
     def test_recursive_countdown_depth_10(self):
         """Test recursive async countdown to depth 10."""
         async def test():
-            conn = rpyc.connect("localhost", 18867)
+            conn = rpyc.connect("localhost", self.port)
 
             try:
                 result = await conn.root.async_countdown(10)
@@ -124,7 +128,7 @@ class TestE2ERecursiveAsync(unittest.TestCase):
     def test_recursive_fibonacci(self):
         """Test recursive async Fibonacci."""
         async def test():
-            conn = rpyc.connect("localhost", 18867)
+            conn = rpyc.connect("localhost", self.port)
 
             try:
                 # Fibonacci(10) = 55
@@ -142,7 +146,7 @@ class TestE2ERecursiveAsync(unittest.TestCase):
     def test_recursive_factorial(self):
         """Test recursive async factorial."""
         async def test():
-            conn = rpyc.connect("localhost", 18867)
+            conn = rpyc.connect("localhost", self.port)
 
             try:
                 # 5! = 120
@@ -160,7 +164,7 @@ class TestE2ERecursiveAsync(unittest.TestCase):
     def test_deep_recursion_depth_20(self):
         """Test deep recursion (depth 20)."""
         async def test():
-            conn = rpyc.connect("localhost", 18867)
+            conn = rpyc.connect("localhost", self.port)
 
             try:
                 result = await conn.root.async_countdown(20)

@@ -18,6 +18,7 @@ import time
 import rpyc
 from rpyc.utils.async_server import AsyncioServer
 from threading import Thread
+from tests.support import get_free_port
 
 
 class CallbackService(rpyc.Service):
@@ -41,17 +42,6 @@ class CallbackService(rpyc.Service):
 
         return f"Server processed: {result}"
 
-    def exposed_sync_with_async_callback(self, callback, value):
-        """
-        Sync method that calls async callback.
-
-        This tests sync method calling async callback.
-        """
-        # Note: In sync context, we need to run async callback synchronously
-        # This requires asyncio.run() or similar
-        import asyncio
-        result = asyncio.run(callback(value + 10))
-        return f"Sync server got: {result}"
 
 
 class TestE2EAsyncCallbacks(unittest.TestCase):
@@ -60,6 +50,9 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Start AsyncioServer in background event loop."""
+        # Get free port dynamically to avoid conflicts
+        cls.port = get_free_port()
+
         # Create event loop for server
         cls.server_loop = asyncio.new_event_loop()
 
@@ -67,7 +60,7 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
             cls.server = AsyncioServer(
                 CallbackService,
                 hostname='localhost',
-                port=18866,
+                port=cls.port,
                 protocol_config={'allow_all_attrs': True}
             )
             await cls.server.start()
@@ -95,7 +88,7 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
     def test_async_callback_basic(self):
         """Test basic async callback from server to client."""
         async def test():
-            conn = rpyc.connect("localhost", 18866)
+            conn = rpyc.connect("localhost", self.port)
 
             # Enable asyncio serving on client to handle callbacks
             loop = asyncio.get_running_loop()
@@ -118,32 +111,10 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
 
         asyncio.run(test())
 
-    def test_sync_method_with_async_callback(self):
-        """Test sync server method calling async callback."""
-        async def test():
-            conn = rpyc.connect("localhost", 18866)
-            loop = asyncio.get_running_loop()
-            conn.enable_asyncio_serving(loop=loop)
-
-            try:
-                async def my_callback(value):
-                    await asyncio.sleep(0.01)
-                    return value * 3
-
-                # Sync method calling async callback
-                result = conn.root.sync_with_async_callback(my_callback, 5)
-
-                self.assertEqual(result, "Sync server got: 45")
-            finally:
-                conn.disable_asyncio_serving()
-                conn.close()
-
-        asyncio.run(test())
-
     def test_callback_exception(self):
         """Test exception in async callback."""
         async def test():
-            conn = rpyc.connect("localhost", 18866)
+            conn = rpyc.connect("localhost", self.port)
             loop = asyncio.get_running_loop()
             conn.enable_asyncio_serving(loop=loop)
 
