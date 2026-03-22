@@ -110,12 +110,13 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
                 remote-instance-id := id object instance (hits or misses on proxy cache)
         id_pack is usually created by rpyc.lib.get_id_pack
     """
-    __slots__ = ["____conn__", "____id_pack__", "__weakref__", "____refcount__"]
+    __slots__ = ["____conn__", "____id_pack__", "__weakref__", "____refcount__", "____is_async__"]
 
     def __init__(self, conn, id_pack):
         self.____conn__ = conn
         self.____id_pack__ = id_pack
         self.____refcount__ = 1
+        self.____is_async__ = False  # NEW (v5.1): Set by _unbox() if FLAGS_ASYNC
 
     def __del__(self):
         try:
@@ -236,7 +237,20 @@ def _make_method(name, doc):
     if name == "__call__":
         def __call__(_self, *args, **kwargs):
             kwargs = tuple(kwargs.items())
-            return syncreq(_self, consts.HANDLE_CALL, args, kwargs)
+
+            # ═══════════════════════════════════════════════════════════
+            # NEW (v5.1): Async Detection
+            # ═══════════════════════════════════════════════════════════
+            # Check if this is an async function (set by _unbox)
+            is_async = getattr(_self, '____is_async__', False)
+
+            if is_async:
+                # Use async handler
+                return syncreq(_self, consts.HANDLE_ASYNC_CALL, args, kwargs)
+            else:
+                # Use sync handler (existing behavior)
+                return syncreq(_self, consts.HANDLE_CALL, args, kwargs)
+
         __call__.__doc__ = doc
         return __call__
     elif name in slicers:                                 # 32/64 bit issue #41
