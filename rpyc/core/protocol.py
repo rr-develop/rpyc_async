@@ -181,6 +181,12 @@ class Connection(object):
             self._receiving = False
             self._thread_pool = []
             self._thread_pool_executor = c_futures.ThreadPoolExecutor()
+        # ═══════════════════════════════════════════════════════════════
+        # Asyncio Support (v5.1)
+        # ═══════════════════════════════════════════════════════════════
+        self._asyncio_loop = None           # Event loop reference
+        self._asyncio_enabled = False       # Async serving enabled?
+        self._loop_fd_registered = False    # FD registered in loop?
 
     def __del__(self):
         self.close()
@@ -229,6 +235,8 @@ class Connection(object):
             return
         try:
             self._closed = True
+            # NEW (v5.1): Cleanup asyncio resources first
+            self.disable_asyncio_serving()
             if self._config.get("before_closed"):
                 self._config["before_closed"](self.root)
             # TODO: define invariants/expectations around close sequence and timing
@@ -249,6 +257,98 @@ class Connection(object):
     def fileno(self):  # IO
         """Returns the connectin's underlying file descriptor"""
         return self._channel.fileno()
+
+    # ═══════════════════════════════════════════════════════════════
+    # Asyncio Integration Methods (v5.1)
+    # ═══════════════════════════════════════════════════════════════
+
+    def enable_asyncio_serving(self, loop=None):
+        """
+        Enable asyncio-native serving for this connection.
+
+        Registers the connection's file descriptor with the event loop
+        for non-blocking, event-driven I/O. Must be called from within
+        a running event loop.
+
+        Args:
+            loop: asyncio event loop to use (default: get_running_loop())
+
+        Raises:
+            RuntimeError: If no event loop is running
+
+        Example:
+            conn = rpyc.connect("localhost", 18861)
+            conn.enable_asyncio_serving()  # Use current loop
+            await conn.root.async_method()
+
+        Note:
+            This method is idempotent - calling multiple times is safe.
+        """
+        import asyncio
+
+        if self._asyncio_enabled:
+            return  # Already enabled
+
+        # Get event loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                raise RuntimeError(
+                    "enable_asyncio_serving() must be called from within "
+                    "a running event loop, or pass loop explicitly"
+                )
+
+        self._asyncio_loop = loop
+        self._asyncio_enabled = True
+
+        # Register file descriptor for read events
+        fd = self._channel.fileno()
+
+        def on_readable():
+            """Called when socket has data to read."""
+            # Read all available data (edge-triggered behavior)
+            while self._channel.poll(0):
+                try:
+                    data = self._channel.recv()
+                    self._dispatch(data)
+                except EOFError:
+                    self.close()
+                    break
+                except Exception:
+                    # Log and continue
+                    if self._config.get("logger"):
+                        self._config["logger"].exception(
+                            "Error in async dispatch"
+                        )
+
+        loop.add_reader(fd, on_readable)
+        self._loop_fd_registered = True
+
+    def disable_asyncio_serving(self):
+        """
+        Disable asyncio-native serving.
+
+        Removes FD from event loop and disables async dispatch.
+        Safe to call multiple times.
+
+        Example:
+            conn.disable_asyncio_serving()
+        """
+        if not self._asyncio_enabled:
+            return
+
+        if self._loop_fd_registered and self._asyncio_loop:
+            fd = self._channel.fileno()
+            self._asyncio_loop.remove_reader(fd)
+            self._loop_fd_registered = False
+
+        self._asyncio_enabled = False
+        self._asyncio_loop = None
+
+    # ═══════════════════════════════════════════════════════════════
+    # End Asyncio Integration
+    # ═══════════════════════════════════════════════════════════════
 
     def ping(self, data=None, timeout=3):  # IO
         """Asserts that the other party is functioning properly, by making sure
