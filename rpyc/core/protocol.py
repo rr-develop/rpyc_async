@@ -412,6 +412,8 @@ class Connection(object):
     def _box(self, obj):  # boxing
         """store a local object in such a way that it could be recreated on
         the remote party either by-value or by-reference"""
+        import inspect
+
         if brine.dumpable(obj):
             return consts.LABEL_VALUE, obj
         if type(obj) is tuple:
@@ -421,7 +423,28 @@ class Connection(object):
         else:
             id_pack = get_id_pack(obj)
             self._local_objects.add(id_pack, obj)
-            return consts.LABEL_REMOTE_REF, id_pack
+
+            # ═══════════════════════════════════════════════════
+            # NEW (v5.1): Extended id_pack for async functions
+            # ═══════════════════════════════════════════════════
+            if inspect.iscoroutinefunction(obj):
+                # Async function - add FLAGS_ASYNC metadata
+                id_pack_with_flags = (*id_pack, consts.FLAGS_ASYNC)
+                return consts.LABEL_REMOTE_REF, id_pack_with_flags
+            elif inspect.iscoroutine(obj):
+                # Coroutine instance (unusual - likely bug)
+                import warnings
+                warnings.warn(
+                    f"Boxing coroutine object {obj!r}. "
+                    f"Did you forget to await?",
+                    RuntimeWarning,
+                    stacklevel=2
+                )
+                id_pack_with_flags = (*id_pack, consts.FLAGS_ASYNC)
+                return consts.LABEL_REMOTE_REF, id_pack_with_flags
+            else:
+                # Sync object - use standard 3-tuple id_pack
+                return consts.LABEL_REMOTE_REF, id_pack
 
     def _unbox(self, package):  # boxing
         """recreate a local object representation of the remote object: if the
@@ -435,13 +458,38 @@ class Connection(object):
         if label == consts.LABEL_LOCAL_REF:
             return self._local_objects[value]
         if label == consts.LABEL_REMOTE_REF:
-            id_pack = (str(value[0]), value[1], value[2])  # so value is a id_pack
+            # ═══════════════════════════════════════════════════
+            # NEW (v5.1): Handle extended id_pack format
+            # ═══════════════════════════════════════════════════
+            # Check if extended format (4 elements) or old format (3)
+            if len(value) == 4:
+                # New format: (class, id, ver, flags)
+                id_pack = (str(value[0]), value[1], value[2])
+                flags = value[3]
+            elif len(value) == 3:
+                # Old format: (class, id, ver)
+                id_pack = (str(value[0]), value[1], value[2])
+                flags = consts.FLAGS_SYNC  # Default: sync object
+            else:
+                raise ValueError(f"Invalid id_pack length: {len(value)}")
+
             proxy = self._proxy_cache.get(id_pack)  # Ensure referents exist until we increment refcount issue #558
             if proxy is not None:
                 proxy.____refcount__ += 1  # if cached then remote incremented refcount, so sync refcount
             else:
                 proxy = self._netref_factory(id_pack)
                 self._proxy_cache[id_pack] = proxy
+
+            # ═══════════════════════════════════════════════════
+            # NEW (v5.1): Attach async metadata to proxy
+            # ═══════════════════════════════════════════════════
+            if flags & consts.FLAGS_ASYNC:
+                # Mark proxy as async
+                # This metadata is used by netref for handler selection
+                proxy.____is_async__ = True
+            else:
+                proxy.____is_async__ = False
+
             return proxy
         raise ValueError(f"invalid label {label!r}")
 
