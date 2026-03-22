@@ -16,7 +16,7 @@ Server.async_process(callback, depth) →
 import unittest
 import asyncio
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 from threading import Thread
 import time
 
@@ -97,24 +97,41 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Start server in background thread."""
-        cls.server = ThreadedServer(
-            ServerService,
-            port=18870,
-            protocol_config={
-                'allow_all_attrs': True,
-                'allow_public_attrs': True,
-            }
-        )
+        """Start AsyncioServer in background event loop."""
+        # Create event loop for server
+        cls.server_loop = asyncio.new_event_loop()
 
-        cls.server_thread = Thread(target=cls.server.start, daemon=True)
+        async def run_server():
+            cls.server = AsyncioServer(
+                ServerService,
+                hostname='localhost',
+                port=18870,
+                protocol_config={
+                    'allow_all_attrs': True,
+                    'allow_public_attrs': True,
+                }
+            )
+            await cls.server.start()
+
+        # Start server in background thread with its own event loop
+        def start_server():
+            asyncio.set_event_loop(cls.server_loop)
+            cls.server_loop.run_until_complete(run_server())
+            cls.server_loop.run_forever()
+
+        cls.server_thread = Thread(target=start_server, daemon=True)
         cls.server_thread.start()
         time.sleep(0.5)
 
     @classmethod
     def tearDownClass(cls):
         """Stop server."""
-        cls.server.close()
+        async def stop_server():
+            await cls.server.close()
+
+        # Schedule close and stop loop
+        asyncio.run_coroutine_threadsafe(stop_server(), cls.server_loop)
+        cls.server_loop.call_soon_threadsafe(cls.server_loop.stop)
 
     def test_simple_async_call_first(self):
         """Test simple async call works (baseline)."""
@@ -123,11 +140,16 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             server_conn = rpyc.connect("localhost", 18870)
 
             try:
+                # Enable asyncio serving on client side
+                loop = asyncio.get_running_loop()
+                server_conn.enable_asyncio_serving(loop=loop)
+
                 # Simple async call
                 result = await server_conn.root.simple_async(5)
                 self.assertEqual(result, 10)
                 print(f"✓ Simple async call works: {result}")
             finally:
+                server_conn.disable_asyncio_serving()
                 server_conn.close()
 
         asyncio.run(test())
@@ -150,7 +172,8 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             try:
                 # Enable asyncio serving on server connection
                 # This is CRITICAL for bidirectional async
-                server_conn.enable_asyncio_serving()
+                loop = asyncio.get_running_loop()
+                server_conn.enable_asyncio_serving(loop=loop)
                 print("✓ Server connection: asyncio serving enabled")
 
                 # Create client service for callbacks
@@ -195,7 +218,8 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             server_conn = rpyc.connect("localhost", 18870)
 
             try:
-                server_conn.enable_asyncio_serving()
+                loop = asyncio.get_running_loop()
+                server_conn.enable_asyncio_serving(loop=loop)
 
                 client_service = ClientService(server_conn)
                 async_callback = client_service.exposed_async_callback
@@ -235,7 +259,8 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             server_conn = rpyc.connect("localhost", 18870)
 
             try:
-                server_conn.enable_asyncio_serving()
+                loop = asyncio.get_running_loop()
+                server_conn.enable_asyncio_serving(loop=loop)
 
                 # Check thread count after enabling asyncio
                 after_enable_count = threading.active_count()

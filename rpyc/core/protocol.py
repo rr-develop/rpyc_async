@@ -311,8 +311,12 @@ class Connection(object):
             while self._channel.poll(0):
                 try:
                     data = self._channel.recv()
+                    if self._config.get("logger"):
+                        self._config["logger"].debug(f"[enable_asyncio_serving] Received data, dispatching...")
                     self._dispatch(data)
                 except EOFError:
+                    if self._config.get("logger"):
+                        self._config["logger"].debug(f"[enable_asyncio_serving] EOF, closing connection")
                     self.close()
                     break
                 except Exception:
@@ -689,11 +693,17 @@ class Connection(object):
                 )
                 # Returns immediately - does NOT block!
             elif needs_async:
-                # ASYNC DISPATCH (without event loop - create temporary one)
-                # This allows async methods to work even without enable_asyncio_serving()
-                import asyncio
-                asyncio.run(self._dispatch_request_async(seq, args))
-                # Blocks until coroutine completes
+                # ASYNC DISPATCH (no event loop available - ERROR)
+                # Cannot execute async method without persistent event loop
+                raise RuntimeError(
+                    "Async method requires persistent event loop. "
+                    "Either:\n"
+                    "1. Use AsyncioServer for server-side: from rpyc.utils.async_server import AsyncioServer\n"
+                    "2. Enable asyncio serving for client-side: conn.enable_asyncio_serving()\n"
+                    "\n"
+                    "ThreadedServer cannot support bidirectional async due to architectural limitations.\n"
+                    "See: docs/LIMITATIONS.md"
+                )
             else:
                 # SYNC DISPATCH (existing behavior)
                 self._dispatch_request(seq, args)

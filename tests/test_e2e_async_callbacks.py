@@ -16,7 +16,7 @@ import unittest
 import asyncio
 import time
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 from threading import Thread
 
 
@@ -59,23 +59,38 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Start RPyC server in background thread."""
-        cls.server = ThreadedServer(
-            CallbackService,
-            port=18866,
-            protocol_config={'allow_all_attrs': True}
-        )
+        """Start AsyncioServer in background event loop."""
+        # Create event loop for server
+        cls.server_loop = asyncio.new_event_loop()
 
-        cls.server_thread = Thread(target=cls.server.start, daemon=True)
+        async def run_server():
+            cls.server = AsyncioServer(
+                CallbackService,
+                hostname='localhost',
+                port=18866,
+                protocol_config={'allow_all_attrs': True}
+            )
+            await cls.server.start()
+
+        # Start server in background thread with its own event loop
+        def start_server():
+            asyncio.set_event_loop(cls.server_loop)
+            cls.server_loop.run_until_complete(run_server())
+            cls.server_loop.run_forever()
+
+        cls.server_thread = Thread(target=start_server, daemon=True)
         cls.server_thread.start()
-
-        # Wait for server to start
         time.sleep(0.5)
 
     @classmethod
     def tearDownClass(cls):
         """Stop RPyC server."""
-        cls.server.close()
+        async def stop_server():
+            await cls.server.close()
+
+        # Schedule close and stop loop
+        asyncio.run_coroutine_threadsafe(stop_server(), cls.server_loop)
+        cls.server_loop.call_soon_threadsafe(cls.server_loop.stop)
 
     def test_async_callback_basic(self):
         """Test basic async callback from server to client."""
@@ -83,7 +98,8 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
             conn = rpyc.connect("localhost", 18866)
 
             # Enable asyncio serving on client to handle callbacks
-            conn.enable_asyncio_serving()
+            loop = asyncio.get_running_loop()
+            conn.enable_asyncio_serving(loop=loop)
 
             try:
                 # Define client-side async callback
@@ -106,7 +122,8 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
         """Test sync server method calling async callback."""
         async def test():
             conn = rpyc.connect("localhost", 18866)
-            conn.enable_asyncio_serving()
+            loop = asyncio.get_running_loop()
+            conn.enable_asyncio_serving(loop=loop)
 
             try:
                 async def my_callback(value):
@@ -127,7 +144,8 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
         """Test exception in async callback."""
         async def test():
             conn = rpyc.connect("localhost", 18866)
-            conn.enable_asyncio_serving()
+            loop = asyncio.get_running_loop()
+            conn.enable_asyncio_serving(loop=loop)
 
             try:
                 async def failing_callback(value):

@@ -9,6 +9,60 @@ manipulated as if they were local.
 
 Documentation can be found at https://rpyc.readthedocs.io
 
+Server Selection Guide
+======================
+
+RPyC provides two main server implementations. Choose based on your async requirements:
+
++-------------------+---------------------------+------------------------------------+
+| Server Type       | Use When                  | Limitations                        |
++===================+===========================+====================================+
+| **ThreadedServer**| - Synchronous methods     | - **Cannot** support bidirectional |
+|                   | - Unidirectional async    |   async (async callbacks)          |
+|                   |   (client→server only)    | - Async methods without persistent |
+|                   | - Simple use cases        |   event loop will raise error      |
++-------------------+---------------------------+------------------------------------+
+| **AsyncioServer** | - Bidirectional async     | - Requires asyncio event loop      |
+|                   | - Async callbacks         | - More complex setup               |
+|                   | - Server calling client   |                                    |
+|                   |   async methods           |                                    |
++-------------------+---------------------------+------------------------------------+
+
+Quick Examples
+--------------
+
+**ThreadedServer** (for simple sync/unidirectional async)::
+
+    from rpyc import ThreadedServer, Service
+
+    class MyService(Service):
+        def exposed_sync_method(self, x):
+            return x * 2
+
+    server = ThreadedServer(MyService, port=18861)
+    server.start()
+
+**AsyncioServer** (for bidirectional async with callbacks)::
+
+    from rpyc import AsyncioServer, Service
+    import asyncio
+
+    class MyService(Service):
+        async def exposed_async_with_callback(self, callback, value):
+            # Server can call client's async callback
+            result = await callback(value * 2)
+            return f"Got: {result}"
+
+    async def main():
+        server = AsyncioServer(MyService, port=18861)
+        await server.start()
+        # Server runs in background, handle other tasks
+        await asyncio.sleep(3600)  # or other async work
+
+    asyncio.run(main())
+
+For more details on async support, see ``docs/LIMITATIONS.md``
+
 .. figure:: http://rpyc.readthedocs.org/en/latest/_images/screenshot.png
    :align: center
 

@@ -8,7 +8,7 @@ Tests that async callbacks work in simpler scenario:
 import unittest
 import asyncio
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 from rpyc.utils.classic import DEFAULT_SERVER_PORT
 from threading import Thread
 import time
@@ -48,20 +48,38 @@ class TestSimpleBidirectionalAsync(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Start server."""
-        cls.server = ThreadedServer(
-            ServerService,
-            port=18872,
-            protocol_config={'allow_all_attrs': True}
-        )
-        cls.server_thread = Thread(target=cls.server.start, daemon=True)
+        """Start AsyncioServer in background event loop."""
+        # Create event loop for server
+        cls.server_loop = asyncio.new_event_loop()
+
+        async def run_server():
+            cls.server = AsyncioServer(
+                ServerService,
+                hostname='localhost',
+                port=18872,
+                protocol_config={'allow_all_attrs': True}
+            )
+            await cls.server.start()
+
+        # Start server in background thread with its own event loop
+        def start_server():
+            asyncio.set_event_loop(cls.server_loop)
+            cls.server_loop.run_until_complete(run_server())
+            cls.server_loop.run_forever()
+
+        cls.server_thread = Thread(target=start_server, daemon=True)
         cls.server_thread.start()
         time.sleep(0.5)
 
     @classmethod
     def tearDownClass(cls):
         """Stop server."""
-        cls.server.close()
+        async def stop_server():
+            await cls.server.close()
+
+        # Schedule close and stop loop
+        asyncio.run_coroutine_threadsafe(stop_server(), cls.server_loop)
+        cls.server_loop.call_soon_threadsafe(cls.server_loop.stop)
 
     def test_server_calls_client_async_method(self):
         """
@@ -76,7 +94,8 @@ class TestSimpleBidirectionalAsync(unittest.TestCase):
 
             # Connect to server
             server_conn = rpyc.connect("localhost", 18872)
-            server_conn.enable_asyncio_serving()
+            loop = asyncio.get_running_loop()
+            server_conn.enable_asyncio_serving(loop=loop)
 
             # Create client service
             client_service = ClientService()
@@ -85,16 +104,27 @@ class TestSimpleBidirectionalAsync(unittest.TestCase):
             # In real bidirectional setup, this would be automatic
             # For this test, we'll use a trick: expose the client service via server connection
 
-            # Alternative approach: Use bg serving thread for client
-            from rpyc.utils.server import ThreadedServer as ClientServer
+            # Alternative approach: Use AsyncioServer for client
+            # Create event loop for client server
+            client_server_loop = asyncio.new_event_loop()
 
-            # Start client as server too
-            client_server = ClientServer(
-                ClientService,
-                port=18873,
-                protocol_config={'allow_all_attrs': True}
-            )
-            client_server_thread = Thread(target=client_server.start, daemon=True)
+            async def run_client_server():
+                client_server = AsyncioServer(
+                    ClientService,
+                    hostname='localhost',
+                    port=18873,
+                    protocol_config={'allow_all_attrs': True}
+                )
+                await client_server.start()
+                return client_server
+
+            # Start client server in background thread with its own event loop
+            def start_client_server():
+                asyncio.set_event_loop(client_server_loop)
+                client_server = client_server_loop.run_until_complete(run_client_server())
+                client_server_loop.run_forever()
+
+            client_server_thread = Thread(target=start_client_server, daemon=True)
             client_server_thread.start()
             time.sleep(0.5)
 
@@ -117,7 +147,8 @@ class TestSimpleBidirectionalAsync(unittest.TestCase):
                 client_conn.close()
                 server_conn.disable_asyncio_serving()
                 server_conn.close()
-                client_server.close()
+                # Stop client server
+                client_server_loop.call_soon_threadsafe(client_server_loop.stop)
 
         asyncio.run(test())
 

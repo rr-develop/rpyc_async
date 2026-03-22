@@ -38,6 +38,7 @@ from rpyc.version import __version__
 
 from rpyc.lib import setup_logger, spawn
 from rpyc.utils.server import OneShotServer, ThreadedServer, ThreadPoolServer, ForkingServer
+from rpyc.utils.async_server import AsyncioServer, run_async_server
 from rpyc import cli
 
 __author__ = "Tomer Filiba (tomerfiliba@gmail.com)"
