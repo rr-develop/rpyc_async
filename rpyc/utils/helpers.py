@@ -259,3 +259,107 @@ def classpartial(*args, **kwargs):
             return cls(*args, **kwargs)
     Partial.__name__ = cls.__name__
     return Partial
+
+
+# ============================================================================
+# Async Detection Utilities (v5.1)
+# ============================================================================
+import inspect
+from functools import lru_cache, partial as functools_partial
+
+
+@lru_cache(maxsize=1024)
+def is_async_function(obj):
+    """
+    Check if object is an async function (coroutine function).
+
+    Uses caching for performance (checks can be expensive).
+
+    Args:
+        obj: Any object to check
+
+    Returns:
+        bool: True if obj is async function
+
+    Examples:
+        >>> async def async_func():
+        ...     pass
+        >>> is_async_function(async_func)
+        True
+
+        >>> def sync_func():
+        ...     pass
+        >>> is_async_function(sync_func)
+        False
+
+        >>> from functools import partial
+        >>> p = partial(async_func)
+        >>> is_async_function(p)
+        True
+    """
+    # Direct check first (fast path)
+    if inspect.iscoroutinefunction(obj):
+        return True
+
+    # Handle functools.partial wrapping async function
+    if isinstance(obj, functools_partial):
+        return is_async_function(obj.func)
+
+    # Handle bound methods, classmethods, staticmethods
+    if hasattr(obj, '__func__'):
+        return is_async_function(obj.__func__)
+
+    return False
+
+
+def is_coroutine(obj):
+    """
+    Check if object is a coroutine instance (not function).
+
+    Args:
+        obj: Any object to check
+
+    Returns:
+        bool: True if obj is coroutine instance
+
+    Examples:
+        >>> async def async_func():
+        ...     pass
+        >>> coro = async_func()
+        >>> is_coroutine(coro)
+        True
+        >>> coro.close()  # cleanup
+
+        >>> is_coroutine(async_func)  # function, not instance
+        False
+    """
+    return inspect.iscoroutine(obj)
+
+
+def is_async_capable(obj):
+    """
+    Check if object is async-capable (async function or coroutine).
+
+    Args:
+        obj: Any object to check
+
+    Returns:
+        bool: True if obj can be awaited or is async
+
+    Examples:
+        >>> async def async_func():
+        ...     pass
+        >>> is_async_capable(async_func)
+        True
+
+        >>> coro = async_func()
+        >>> is_async_capable(coro)
+        True
+        >>> coro.close()
+
+        >>> def sync_func():
+        ...     pass
+        >>> is_async_capable(sync_func)
+        False
+    """
+    return is_async_function(obj) or is_coroutine(obj)
