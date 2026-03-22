@@ -12,6 +12,31 @@ Server.async_process(callback, depth) →
     calls client.async_callback(value) →
         calls server.async_process(callback, depth-1) →
             ... recursive until depth=0
+
+IMPORTANT - Port Allocation Best Practices:
+==========================================
+This test uses DYNAMIC PORT ALLOCATION to prevent conflicts.
+
+✅ CORRECT PATTERN (used here):
+    def setUp(self):
+        self.server_port = get_free_port()  # Unique port per test
+        self.server = AsyncioServer(..., port=self.server_port)
+
+❌ WRONG - DO NOT USE:
+    @classmethod
+    def setUpClass(cls):
+        cls.server_port = get_free_port()  # Shared port = race conditions!
+
+    # Or worse:
+    server = AsyncioServer(..., port=18870)  # Hardcoded = conflicts!
+
+WHY:
+- Each test needs its own isolated server instance
+- Shared ports cause race conditions between sequential tests
+- Hardcoded ports conflict with parallel tests and other processes
+- setUp/tearDown provides proper test isolation
+
+See tests/support.py::get_free_port() for detailed documentation.
 """
 import unittest
 import asyncio

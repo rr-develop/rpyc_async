@@ -53,9 +53,46 @@ def get_free_port():
     Returns:
         int: An available port number
 
+    Usage:
+        ALWAYS use this function instead of hardcoded ports in tests to prevent:
+        - Port conflicts when tests run in parallel
+        - Port conflicts with other processes
+        - Race conditions between test executions
+
+        Correct usage pattern:
+        ```python
+        def setUp(self):
+            # Get unique port for THIS test instance
+            self.port = get_free_port()
+            self.server = AsyncioServer(MyService, port=self.port)
+            await self.server.start()
+
+        def test_something(self):
+            # Use self.port to connect
+            conn = rpyc.connect("localhost", self.port)
+        ```
+
+        WRONG - DO NOT DO THIS:
+        ```python
+        # ❌ WRONG: Hardcoded port causes conflicts
+        server = AsyncioServer(MyService, port=18870)
+
+        # ❌ WRONG: setUpClass with shared port causes race conditions
+        @classmethod
+        def setUpClass(cls):
+            cls.port = get_free_port()  # Shared across tests = BAD
+        ```
+
+    Important:
+        - Call get_free_port() in setUp() (per-test), NOT in setUpClass() (per-class)
+        - Each test should get its own unique port
+        - Use instance variables (self.port), not class variables (cls.port)
+        - This ensures test isolation and prevents race conditions
+
     Note:
         There is a small race condition where the port could be taken between
         when we release it and when it's used, but this is unlikely in practice.
+        The benefits of avoiding hardcoded ports far outweigh this minimal risk.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0))
