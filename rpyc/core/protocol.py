@@ -462,6 +462,122 @@ class Connection(object):
                 self._netref_classes_cache[id_pack] = cls
         return cls(self, id_pack)
 
+    # ═══════════════════════════════════════════════════════════════
+    # Async Dispatch Pipeline (v5.1)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _is_async_handler(self, handler_id):
+        """
+        Check if handler requires async dispatch.
+
+        Args:
+            handler_id: Handler constant (HANDLE_CALL, etc.)
+
+        Returns:
+            bool: True if handler is async
+        """
+        # Explicit async handlers
+        if handler_id in (
+            consts.HANDLE_ASYNC_CALL,
+            consts.HANDLE_ASYNC_CALLATTR
+        ):
+            return True
+
+        # Check handler function signature
+        handler_func = self._HANDLERS.get(handler_id)
+        if handler_func is None:
+            return False
+
+        import inspect
+        return inspect.iscoroutinefunction(handler_func)
+
+    def _needs_async_dispatch(self, msg_type, args):
+        """
+        Determine if message requires async dispatch pipeline.
+
+        Args:
+            msg_type: Message type constant
+            args: Message arguments (handler_id, ...)
+
+        Returns:
+            bool: True if async dispatch needed
+        """
+        # Explicit async messages
+        if msg_type in (
+            consts.MSG_ASYNC_REQUEST,
+            consts.MSG_ASYNC_REPLY,
+            consts.MSG_ASYNC_EXCEPTION
+        ):
+            return True
+
+        # Check handler type for MSG_REQUEST
+        if msg_type == consts.MSG_REQUEST:
+            handler_id, _ = args
+            return self._is_async_handler(handler_id)
+
+        return False
+
+    async def _dispatch_request_async(self, seq, raw_args):
+        """
+        Async version of _dispatch_request() - can await handlers!
+
+        Args:
+            seq: Request sequence number
+            raw_args: Raw (handler_id, args) tuple
+
+        This method runs in the event loop and can safely await.
+        """
+        import inspect
+
+        try:
+            handler_id, args = raw_args
+
+            # Unbox arguments
+            args = self._unbox(args)
+
+            # Get handler function
+            handler_func = self._HANDLERS.get(handler_id)
+            if handler_func is None:
+                raise AttributeError(f"Unknown handler: {handler_id}")
+
+            # ═══════════════════════════════════════════════════
+            # EXECUTE HANDLER (async or sync)
+            # ═══════════════════════════════════════════════════
+            if inspect.iscoroutinefunction(handler_func):
+                # Handler is async - await it!
+                res = await handler_func(self, *args)
+            else:
+                # Handler is sync - call normally
+                res = handler_func(self, *args)
+
+                # Check if result is coroutine (from async function call)
+                if inspect.iscoroutine(res):
+                    res = await res
+
+        except:  # TODO: revisit exception handling
+            # Exception during execution
+            t, v, tb = sys.exc_info()
+            self._last_traceback = tb
+
+            logger = self._config["logger"]
+            if logger and t is not StopIteration:
+                logger.debug("Exception caught in async dispatch", exc_info=True)
+
+            if t is SystemExit and self._config["propagate_SystemExit_locally"]:
+                raise
+            if t is KeyboardInterrupt and self._config["propagate_KeyboardInterrupt_locally"]:
+                raise
+
+            # Send async exception reply
+            self._send(consts.MSG_ASYNC_EXCEPTION, seq, self._box_exc(t, v, tb))
+        else:
+            # Success - send async reply
+            self._send(consts.MSG_ASYNC_REPLY, seq, self._box(res))
+
+    # ═══════════════════════════════════════════════════════════════
+    # End Async Dispatch Pipeline
+    # ═══════════════════════════════════════════════════════════════
+
     def _dispatch_request(self, seq, raw_args):  # dispatch
         try:
             handler, args = raw_args
@@ -509,7 +625,23 @@ class Connection(object):
             else:
                 self._recvlock.release()
             seq, args = brine.load(data[1:])
-            self._dispatch_request(seq, args)
+
+            # ═══════════════════════════════════════════════════════════
+            # NEW (v5.1): Async Dispatch Routing
+            # ═══════════════════════════════════════════════════════════
+            needs_async = self._needs_async_dispatch(msg, args)
+
+            if needs_async and self._asyncio_enabled and self._asyncio_loop:
+                # ASYNC DISPATCH PIPELINE
+                import asyncio
+                asyncio.run_coroutine_threadsafe(
+                    self._dispatch_request_async(seq, args),
+                    self._asyncio_loop
+                )
+                # Returns immediately - does NOT block!
+            else:
+                # SYNC DISPATCH (existing behavior)
+                self._dispatch_request(seq, args)
         else:
             if self._bind_threads:
                 this_thread = self._get_thread()
@@ -523,6 +655,21 @@ class Connection(object):
                 if not self._bind_threads:
                     self._recvlock.release()  # releasing here fixes race condition with AsyncResult.wait
             elif msg == consts.MSG_EXCEPTION:
+                if not self._bind_threads:
+                    self._recvlock.release()
+                seq, args = brine.load(data[1:])
+                obj = self._unbox_exc(args)
+                self._seq_request_callback(msg, seq, True, obj)
+            # ═══════════════════════════════════════════════════════════
+            # NEW (v5.1): Async Reply/Exception handling
+            # ═══════════════════════════════════════════════════════════
+            elif msg == consts.MSG_ASYNC_REPLY:
+                seq, args = brine.load(data[1:])
+                obj = self._unbox(args)
+                self._seq_request_callback(msg, seq, False, obj)
+                if not self._bind_threads:
+                    self._recvlock.release()
+            elif msg == consts.MSG_ASYNC_EXCEPTION:
                 if not self._bind_threads:
                     self._recvlock.release()
                 seq, args = brine.load(data[1:])
@@ -908,7 +1055,9 @@ class Connection(object):
 
     @classmethod
     def _request_handlers(cls):  # request handlers
-        return {
+        from rpyc.core import async_handlers
+
+        handlers = {
             consts.HANDLE_PING: cls._handle_ping,
             consts.HANDLE_CLOSE: cls._handle_close,
             consts.HANDLE_GETROOT: cls._handle_getroot,
@@ -929,7 +1078,13 @@ class Connection(object):
             consts.HANDLE_BUFFITER: cls._handle_buffiter,
             consts.HANDLE_OLDSLICING: cls._handle_oldslicing,
             consts.HANDLE_CTXEXIT: cls._handle_ctxexit,
+            # ═══════════════════════════════════════════════════
+            # Async Handlers (v5.1)
+            # ═══════════════════════════════════════════════════
+            consts.HANDLE_ASYNC_CALL: async_handlers._handle_async_call,
+            consts.HANDLE_ASYNC_CALLATTR: async_handlers._handle_async_callattr,
         }
+        return handlers
 
     def _handle_ping(self, data):  # request handler
         return data
