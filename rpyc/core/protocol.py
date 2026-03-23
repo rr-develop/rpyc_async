@@ -187,6 +187,7 @@ class Connection(object):
         self._asyncio_loop = None           # Event loop reference
         self._asyncio_enabled = False       # Async serving enabled?
         self._loop_fd_registered = False    # FD registered in loop?
+        self._registered_fd = None          # Saved FD for cleanup
 
     def __del__(self):
         self.close()
@@ -305,6 +306,14 @@ class Connection(object):
         # Register file descriptor for read events
         fd = self._channel.fileno()
 
+        # CRITICAL: Remove any existing registration for this FD first
+        # This handles the case where FD is reused before old connection cleanup
+        try:
+            loop.remove_reader(fd)
+        except (ValueError, OSError):
+            # FD not registered or already removed - this is fine
+            pass
+
         def on_readable():
             """Called when socket has data to read."""
             # Read all available data (edge-triggered behavior)
@@ -331,6 +340,7 @@ class Connection(object):
 
         loop.add_reader(fd, on_readable)
         self._loop_fd_registered = True
+        self._registered_fd = fd  # Save FD for cleanup
 
     def disable_asyncio_serving(self):
         """
@@ -345,10 +355,15 @@ class Connection(object):
         if not self._asyncio_enabled:
             return
 
-        if self._loop_fd_registered and self._asyncio_loop:
-            fd = self._channel.fileno()
-            self._asyncio_loop.remove_reader(fd)
+        if self._loop_fd_registered and self._asyncio_loop and self._registered_fd is not None:
+            # Use saved FD instead of fileno() which may fail if stream is closed
+            try:
+                self._asyncio_loop.remove_reader(self._registered_fd)
+            except Exception:
+                # Ignore errors - FD may already be removed or closed
+                pass
             self._loop_fd_registered = False
+            self._registered_fd = None
 
         self._asyncio_enabled = False
         self._asyncio_loop = None
