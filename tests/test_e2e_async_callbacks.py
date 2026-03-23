@@ -1,97 +1,141 @@
 """
 E2E Test: Async Callbacks
 
-Tests async callbacks from server back to client.
+Tests async callbacks from server back to client using REAL multiprocessing.
 
 Scenario:
-1. Client exposes async callback method
-2. Client calls server method, passing callback as argument
-3. Server calls client's async callback
-4. Client executes async callback and returns result
-5. Server receives result and returns to original client call
+1. Server process exposes async method that accepts callback
+2. Client process exposes async callback method (via bidirectional connection)
+3. Client calls server method, passing callback as argument
+4. Server calls client's async callback ACROSS PROCESS BOUNDARY
+5. Client executes async callback in its own process and returns result
+6. Server receives result and returns to original client call
 
-This tests bidirectional async RPC.
+This tests bidirectional async RPC across true process boundaries.
+
+ARCHITECTURE:
+=============
+Process 1 (Server):                Process 2 (Client/Test):
+├─ AsyncioServer                   ├─ unittest.TestCase
+├─ event loop (main thread)        ├─ event loop (main thread)
+├─ CallbackService                 ├─ rpyc.connect() (bidirectional!)
+├─ exposed_process_with_callback   ├─ async def my_callback(...)
+└─ await callback(value) ─────────→└─ executes in client process
+
+NO THREADS are created by tests! Each process uses its own event loop in main thread.
 """
 import unittest
 import asyncio
 import time
 import rpyc
 from rpyc.utils.async_server import AsyncioServer
-from threading import Thread
+from multiprocessing import Process, Queue
 from tests.support import get_free_port
 
 
-class CallbackService(rpyc.Service):
-    """Server service that calls back to client."""
+def run_callback_server(port, ready_queue):
+    """
+    Server process entry point.
 
-    async def exposed_process_with_callback(self, callback, value):
-        """
-        Async method that calls back to client.
+    Runs in SEPARATE PROCESS. Creates its own event loop in MAIN THREAD.
 
-        Args:
-            callback: Client-provided async callback
-            value: Value to process
+    Args:
+        port: Port number to bind to
+        ready_queue: Queue to signal server is ready
+    """
+    # Define service in server process
+    class CallbackService(rpyc.Service):
+        """Server service that calls back to client."""
 
-        Returns:
-            Result from callback
-        """
-        await asyncio.sleep(0.01)  # Simulate async work
+        async def exposed_process_with_callback(self, callback, value):
+            """
+            Async method that calls back to client.
 
-        # Call client's async callback
-        result = await callback(value * 2)
+            Args:
+                callback: Client-provided async callback
+                value: Value to process
 
-        return f"Server processed: {result}"
+            Returns:
+                Result from callback
+            """
+            await asyncio.sleep(0.01)  # Simulate async work
 
+            # Call client's async callback ACROSS PROCESS BOUNDARY
+            result = await callback(value * 2)
+
+            return f"Server processed: {result}"
+
+    async def server_main():
+        """Server main coroutine."""
+        server = AsyncioServer(
+            CallbackService,
+            hostname='localhost',
+            port=port,
+            protocol_config={'allow_all_attrs': True}
+        )
+        await server.start()
+
+        # Signal that server is ready
+        ready_queue.put("ready")
+
+        try:
+            # Run forever (until process is terminated)
+            await asyncio.Event().wait()
+        finally:
+            await server.close()
+
+    # Run server in event loop (main thread of this process)
+    try:
+        asyncio.run(server_main())
+    except KeyboardInterrupt:
+        pass
 
 
 class TestE2EAsyncCallbacks(unittest.TestCase):
-    """Test E2E async callbacks."""
+    """Test E2E async callbacks using real multiprocessing."""
 
     def setUp(self):
-        """Start AsyncioServer in background event loop for this test."""
+        """Start AsyncioServer in SEPARATE PROCESS for this test."""
         # Get free port dynamically to avoid conflicts
         self.port = get_free_port()
 
-        # Create event loop for server
-        self.server_loop = asyncio.new_event_loop()
+        # Create queue for server readiness signaling
+        self.ready_queue = Queue()
 
-        async def run_server():
-            self.server = AsyncioServer(
-                CallbackService,
-                hostname='localhost',
-                port=self.port,
-                protocol_config={'allow_all_attrs': True}
-            )
-            await self.server.start()
+        # Start server in separate process
+        self.server_process = Process(
+            target=run_callback_server,
+            args=(self.port, self.ready_queue),
+            daemon=True
+        )
+        self.server_process.start()
 
-        # Start server in background thread with its own event loop
-        def start_server():
-            asyncio.set_event_loop(self.server_loop)
-            self.server_loop.run_until_complete(run_server())
-            self.server_loop.run_forever()
+        # Wait for server to be ready (with timeout)
+        try:
+            ready_signal = self.ready_queue.get(timeout=5.0)
+            if ready_signal != "ready":
+                raise RuntimeError(f"Unexpected ready signal: {ready_signal}")
+        except:
+            self.server_process.terminate()
+            self.server_process.join(timeout=1.0)
+            raise RuntimeError("Server failed to start within 5 seconds")
 
-        self.server_thread = Thread(target=start_server, daemon=True)
-        self.server_thread.start()
-        time.sleep(0.5)
+        # Give server a moment to fully initialize
+        time.sleep(0.2)
 
     def tearDown(self):
-        """Stop RPyC server after this test."""
-        async def stop_server():
-            await self.server.close()
+        """Stop server process after this test."""
+        if self.server_process and self.server_process.is_alive():
+            self.server_process.terminate()
+            self.server_process.join(timeout=2.0)
 
-        # Schedule close and wait
-        future = asyncio.run_coroutine_threadsafe(stop_server(), self.server_loop)
-        try:
-            future.result(timeout=2.0)
-        except:
-            pass
-
-        # Stop loop
-        self.server_loop.call_soon_threadsafe(self.server_loop.stop)
-        time.sleep(0.1)
+            # Force kill if still alive
+            if self.server_process.is_alive():
+                self.server_process.kill()
+                self.server_process.join(timeout=1.0)
 
     def test_async_callback_basic(self):
-        """Test basic async callback from server to client."""
+        """Test basic async callback from server to client across processes."""
         async def test():
             conn = rpyc.connect("localhost", self.port)
 
@@ -102,7 +146,7 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
             try:
                 # Define client-side async callback
                 async def my_callback(value):
-                    """Client async callback."""
+                    """Client async callback - runs in CLIENT process."""
                     await asyncio.sleep(0.01)
                     return f"Client got: {value}"
 
@@ -117,7 +161,7 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
         asyncio.run(test())
 
     def test_callback_exception(self):
-        """Test exception in async callback."""
+        """Test exception in async callback across processes."""
         async def test():
             conn = rpyc.connect("localhost", self.port)
             loop = asyncio.get_running_loop()

@@ -1,17 +1,30 @@
 """
 CRITICAL TEST: Bidirectional Async Recursive Calls
 
-This is the most important test - it verifies that:
-1. Server async method can call client async callback
-2. Client async callback can call server async method (recursion)
+This is the MOST IMPORTANT test - it verifies that:
+1. Server async method can call client async callback ACROSS PROCESSES
+2. Client async callback can call server async method (recursion) ACROSS PROCESSES
 3. All uses existing event loops (NO new threads)
 4. Bidirectional connection works correctly
+5. TRUE multiprocessing is used (NOT threading emulation!)
 
 Scenario:
 Server.async_process(callback, depth) →
-    calls client.async_callback(value) →
-        calls server.async_process(callback, depth-1) →
+    calls client.async_callback(value) → [PROCESS BOUNDARY]
+        calls server.async_process(callback, depth-1) → [PROCESS BOUNDARY]
             ... recursive until depth=0
+
+ARCHITECTURE:
+=============
+Process 1 (Server):                    Process 2 (Client/Test):
+├─ AsyncioServer                       ├─ unittest.TestCase
+├─ event loop (main thread only!)     ├─ event loop (main thread only!)
+├─ ServerService                       ├─ rpyc.connect() (bidirectional!)
+├─ exposed_async_process_...          ├─ ClientService (for callbacks)
+│  └─ await callback(value) ───────────→├─ exposed_async_callback
+│                                       │  └─ await conn.root.async_process... (recursive!)
+│  ←─────────────────────────────────────┘
+└─ NO threads created!                 └─ NO threads created!
 
 IMPORTANT - Port Allocation Best Practices:
 ==========================================
@@ -42,81 +55,88 @@ import unittest
 import asyncio
 import rpyc
 from rpyc.utils.async_server import AsyncioServer
-from threading import Thread
+from multiprocessing import Process, Queue
 import time
 from tests.support import get_free_port
 
 
-class ServerService(rpyc.Service):
-    """Server service with async method that calls client callback."""
+def run_bidirectional_server(port, ready_queue):
+    """
+    Server process entry point.
 
-    async def exposed_async_process_with_callback(self, callback, value, depth):
-        """
-        Async method that recursively calls client callback.
+    Runs in SEPARATE PROCESS. Creates its own event loop in MAIN THREAD.
 
-        Args:
-            callback: Client async callback function
-            value: Current value
-            depth: Recursion depth
+    Args:
+        port: Port number to bind to
+        ready_queue: Queue to signal server is ready
+    """
+    # Define service in server process
+    class ServerService(rpyc.Service):
+        """Server service with async method that calls client callback."""
 
-        Returns:
-            Final result after recursion
-        """
-        print(f"[SERVER] async_process_with_callback(value={value}, depth={depth})")
+        async def exposed_async_process_with_callback(self, callback, value, depth):
+            """
+            Async method that recursively calls client callback.
 
-        # Simulate async work
-        await asyncio.sleep(0.01)
+            Args:
+                callback: Client async callback function
+                value: Current value
+                depth: Recursion depth
 
-        if depth <= 0:
-            return f"Final: {value}"
+            Returns:
+                Final result after recursion
+            """
+            print(f"[SERVER] async_process_with_callback(value={value}, depth={depth})")
 
-        # Call client's async callback - this should work!
-        print(f"[SERVER] Calling client callback with value={value * 2}")
-        result = await callback(value * 2, depth - 1)
+            # Simulate async work
+            await asyncio.sleep(0.01)
 
-        return f"Server processed: {result}"
+            if depth <= 0:
+                return f"Final: {value}"
 
-    async def exposed_simple_async(self, x):
-        """Simple async method for testing."""
-        await asyncio.sleep(0.01)
-        return x * 2
+            # Call client's async callback ACROSS PROCESS BOUNDARY - this should work!
+            print(f"[SERVER] Calling client callback with value={value * 2}")
+            result = await callback(value * 2, depth - 1)
 
+            return f"Server processed: {result}"
 
-class ClientService(rpyc.Service):
-    """Client service (acts as server for callbacks)."""
+        async def exposed_simple_async(self, x):
+            """Simple async method for testing."""
+            await asyncio.sleep(0.01)
+            return x * 2
 
-    def __init__(self, server_conn):
-        super().__init__()
-        self.server_conn = server_conn
-
-    async def exposed_async_callback(self, value, depth):
-        """
-        Client async callback that calls back to server.
-
-        This is the critical part - async callback calling async server method.
-        """
-        print(f"[CLIENT] async_callback(value={value}, depth={depth})")
-
-        # Simulate async work
-        await asyncio.sleep(0.01)
-
-        if depth <= 0:
-            return f"Client finished: {value}"
-
-        # Recursive call back to server - CRITICAL!
-        print(f"[CLIENT] Calling server.async_process_with_callback recursively")
-        result = await self.server_conn.root.async_process_with_callback(
-            self.exposed_async_callback,
-            value + 10,
-            depth - 1
+    async def server_main():
+        """Server main coroutine."""
+        server = AsyncioServer(
+            ServerService,
+            hostname='localhost',
+            port=port,
+            protocol_config={
+                'allow_all_attrs': True,
+                'allow_public_attrs': True,
+            }
         )
+        await server.start()
 
-        return f"Client processed: {result}"
+        # Signal that server is ready
+        ready_queue.put("ready")
+
+        try:
+            # Run forever (until process is terminated)
+            await asyncio.Event().wait()
+        finally:
+            await server.close()
+
+    # Run server in event loop (main thread of this process)
+    try:
+        asyncio.run(server_main())
+    except KeyboardInterrupt:
+        pass
 
 
 class TestCriticalBidirectionalAsync(unittest.TestCase):
     """
-    CRITICAL TEST: Bidirectional async with recursion.
+    CRITICAL TEST: Bidirectional async with recursion using REAL multiprocessing.
 
     This test MUST PASS for the implementation to be valid.
 
@@ -124,53 +144,47 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
     """
 
     def setUp(self):
-        """Start AsyncioServer in background event loop for this test."""
+        """Start AsyncioServer in SEPARATE PROCESS for this test."""
         # Get free port dynamically to avoid conflicts
         self.server_port = get_free_port()
 
-        # Create event loop for server
-        self.server_loop = asyncio.new_event_loop()
+        # Create queue for server readiness signaling
+        self.ready_queue = Queue()
 
-        async def run_server():
-            self.server = AsyncioServer(
-                ServerService,
-                hostname='localhost',
-                port=self.server_port,
-                protocol_config={
-                    'allow_all_attrs': True,
-                    'allow_public_attrs': True,
-                }
-            )
-            await self.server.start()
+        # Start server in separate process
+        self.server_process = Process(
+            target=run_bidirectional_server,
+            args=(self.server_port, self.ready_queue),
+            daemon=True
+        )
+        self.server_process.start()
 
-        # Start server in background thread with its own event loop
-        def start_server():
-            asyncio.set_event_loop(self.server_loop)
-            self.server_loop.run_until_complete(run_server())
-            self.server_loop.run_forever()
+        # Wait for server to be ready (with timeout)
+        try:
+            ready_signal = self.ready_queue.get(timeout=5.0)
+            if ready_signal != "ready":
+                raise RuntimeError(f"Unexpected ready signal: {ready_signal}")
+        except:
+            self.server_process.terminate()
+            self.server_process.join(timeout=1.0)
+            raise RuntimeError("Server failed to start within 5 seconds")
 
-        self.server_thread = Thread(target=start_server, daemon=True)
-        self.server_thread.start()
-        time.sleep(0.5)  # Give server time to start
+        # Give server a moment to fully initialize
+        time.sleep(0.2)
 
     def tearDown(self):
-        """Stop server after this test."""
-        async def stop_server():
-            await self.server.close()
+        """Stop server process after this test."""
+        if self.server_process and self.server_process.is_alive():
+            self.server_process.terminate()
+            self.server_process.join(timeout=2.0)
 
-        # Schedule close and wait for it
-        future = asyncio.run_coroutine_threadsafe(stop_server(), self.server_loop)
-        try:
-            future.result(timeout=2.0)  # Wait for clean shutdown
-        except:
-            pass  # Ignore timeout errors on shutdown
-
-        # Stop loop
-        self.server_loop.call_soon_threadsafe(self.server_loop.stop)
-        time.sleep(0.1)  # Brief pause for cleanup
+            # Force kill if still alive
+            if self.server_process.is_alive():
+                self.server_process.kill()
+                self.server_process.join(timeout=1.0)
 
     def test_simple_async_call_first(self):
-        """Test simple async call works (baseline)."""
+        """Test simple async call works (baseline) across processes."""
         async def test():
             # Connect to server
             server_conn = rpyc.connect("localhost", self.server_port)
@@ -192,7 +206,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
 
     def test_bidirectional_async_with_recursion_depth_3(self):
         """
-        CRITICAL TEST: Bidirectional async callbacks with recursion.
+        CRITICAL TEST: Bidirectional async callbacks with recursion across processes.
 
         This is THE most important test. If this doesn't work,
         the implementation is incomplete.
@@ -212,11 +226,31 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
                 server_conn.enable_asyncio_serving(loop=loop)
                 print("✓ Server connection: asyncio serving enabled")
 
-                # Create client service for callbacks
-                client_service = ClientService(server_conn)
+                # Define async callback that will run in CLIENT process
+                # This callback CALLS BACK to server (recursion!)
+                async def async_callback(value, depth):
+                    """
+                    Client async callback that calls back to server.
 
-                # Get the async callback method
-                async_callback = client_service.exposed_async_callback
+                    This is the critical part - async callback calling async server method.
+                    """
+                    print(f"[CLIENT] async_callback(value={value}, depth={depth})")
+
+                    # Simulate async work
+                    await asyncio.sleep(0.01)
+
+                    if depth <= 0:
+                        return f"Client finished: {value}"
+
+                    # Recursive call back to server ACROSS PROCESS BOUNDARY - CRITICAL!
+                    print(f"[CLIENT] Calling server.async_process_with_callback recursively")
+                    result = await server_conn.root.async_process_with_callback(
+                        async_callback,
+                        value + 10,
+                        depth - 1
+                    )
+
+                    return f"Client processed: {result}"
 
                 print("\n[TEST] Starting recursive async call chain...")
                 print("[TEST] Server → Client → Server → Client → ... (depth=3)\n")
@@ -245,7 +279,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
         asyncio.run(test())
 
     def test_bidirectional_async_depth_5(self):
-        """Test deeper recursion (depth=5)."""
+        """Test deeper recursion (depth=5) across processes."""
         async def test():
             print("\n" + "="*60)
             print("CRITICAL TEST: Bidirectional async with recursion (depth=5)")
@@ -257,8 +291,20 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
                 loop = asyncio.get_running_loop()
                 server_conn.enable_asyncio_serving(loop=loop)
 
-                client_service = ClientService(server_conn)
-                async_callback = client_service.exposed_async_callback
+                async def async_callback(value, depth):
+                    """Client async callback."""
+                    print(f"[CLIENT] async_callback(value={value}, depth={depth})")
+                    await asyncio.sleep(0.01)
+
+                    if depth <= 0:
+                        return f"Client finished: {value}"
+
+                    result = await server_conn.root.async_process_with_callback(
+                        async_callback,
+                        value + 10,
+                        depth - 1
+                    )
+                    return f"Client processed: {result}"
 
                 print("\n[TEST] Starting deep recursive call chain (depth=5)...\n")
 
@@ -284,7 +330,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
         """
         Verify that event loops are reused, not creating new threads.
 
-        This test checks that we're using existing event loops.
+        This test checks that we're using existing event loops in main threads only.
         """
         async def test():
             import threading
@@ -309,8 +355,19 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
                     "Too many threads created!"
                 )
 
-                client_service = ClientService(server_conn)
-                async_callback = client_service.exposed_async_callback
+                async def async_callback(value, depth):
+                    """Client async callback."""
+                    await asyncio.sleep(0.01)
+
+                    if depth <= 0:
+                        return f"Client finished: {value}"
+
+                    result = await server_conn.root.async_process_with_callback(
+                        async_callback,
+                        value + 10,
+                        depth - 1
+                    )
+                    return f"Client processed: {result}"
 
                 # Execute recursive calls
                 result = await server_conn.root.async_process_with_callback(
