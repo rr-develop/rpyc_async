@@ -148,10 +148,12 @@ class TestConfigAllows(unittest.TestCase):
         self.assertEqual(obj + 'bar', "foobar")
         self.assertEqual(obj.foobar(), "Fee Fie Foe Foo")
         self.assertEqual(obj.exposed_foobar(), "Fee Fie Foe Foo")
+        # Private attrs (starting with _) should still be blocked
         self.assertRaises(AttributeError, lambda: obj._privy)
-        self.assertRaises(AttributeError, lambda: obj.foo)
-        self.assertRaises(AttributeError, lambda: obj.bar)
-        self.assertRaises(AttributeError, lambda: obj.spam)
+        # Public attrs (not starting with _) are now allowed by default (allow_public_attrs=True)
+        self.assertEqual(obj.foo(), "foo")
+        self.assertEqual(obj.bar(), "bar")
+        self.assertEqual(obj.spam(), "spam")
 
     def test_allow_all(self):
         self._reset_cfg()
@@ -176,6 +178,8 @@ class TestConfigAllows(unittest.TestCase):
     def test_allow_safe_attrs(self):
         self._reset_cfg()
         self.cfg['allow_safe_attrs'] = False
+        # Also need to disable allow_public_attrs to actually block public methods
+        self.cfg['allow_public_attrs'] = False
         obj = self._get_myclass(self.cfg)
         self.assertEqual(obj.foobar(), "Fee Fie Foe Foo")
         self.assertEqual(obj.exposed_foobar(), "Fee Fie Foe Foo")

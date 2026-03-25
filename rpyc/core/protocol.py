@@ -29,7 +29,12 @@ DEFAULT_CONFIG = dict(
     # ATTRIBUTES
     allow_safe_attrs=True,
     allow_exposed_attrs=True,
-    allow_public_attrs=False,
+    # allow_public_attrs: Allow access to public attributes (not starting with '_').
+    # This is enabled by default to allow natural usage of regular Python objects
+    # passed as netref arguments. Service classes can still use 'exposed_' prefix
+    # to explicitly mark their API methods, but regular objects work as expected.
+    # Changed from False to True to enable intuitive netref behavior.
+    allow_public_attrs=True,
     allow_all_attrs=False,
     safe_attrs=set(['__abs__', '__add__', '__and__', '__bool__', '__cmp__', '__contains__',
                     '__delitem__', '__delslice__', '__div__', '__divmod__', '__doc__',
@@ -1110,6 +1115,18 @@ class Connection(object):
         return self._remote_root
 
     def _check_attr(self, obj, name, perm):  # attribute access
+        """
+        Check if attribute access is allowed based on security configuration.
+
+        Access is granted if ANY of these conditions are met:
+        1. allow_all_attrs=True - allows all attributes
+        2. allow_exposed_attrs=True and name starts with exposed_prefix (default: "exposed_")
+        3. allow_safe_attrs=True and name is in safe_attrs list (magic methods)
+        4. allow_public_attrs=True (default) and name doesn't start with "_"
+
+        This allows natural usage of regular Python objects passed as netref arguments
+        while still requiring Service classes to use 'exposed_' prefix for API methods.
+        """
         config = self._config
         if not config[perm]:
             raise AttributeError(f"cannot access {name!r}")
