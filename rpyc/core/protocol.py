@@ -169,7 +169,10 @@ class Connection(object):
         self._sendlock = Lock()
         self._recv_event = Condition()  # TODO: why not simply timeout? why not associate w/ recvlock? explain/redesign
         self._request_callbacks = {}
-        self._local_objects = RefCountingColl()
+        # Initialize _local_objects with debug refcounting if enabled
+        debug_refcount = self._config.get("debug_refcounting", False)
+        logger = self._config.get("logger")
+        self._local_objects = RefCountingColl(logger=logger, debug=debug_refcount)
         self._last_traceback = None
         self._proxy_cache = WeakValueDict()
         self._netref_classes_cache = {}
@@ -514,13 +517,21 @@ class Connection(object):
                 # Object missing from _local_objects - likely removed via decref
                 # while still being referenced by remote side
                 logger = self._config.get("logger")
+
+                # Try to provide helpful information about what was expected
+                # value is id_pack: (name_pack, type_id, object_id)
+                name_pack = value[0] if len(value) > 0 else "unknown"
+                type_id = value[1] if len(value) > 1 else 0
+                obj_id = value[2] if len(value) > 2 else 0
+
                 if logger:
                     logger.error(
                         f"LABEL_LOCAL_REF points to missing object {value}. "
+                        f"Expected: {name_pack} (type_id={type_id:#x}, obj_id={obj_id:#x}). "
                         f"Object may have been garbage collected or improperly reference counted."
                     )
                 raise ValueError(
-                    f"Local object {value} not found in _local_objects. "
+                    f"Local object {value} ({name_pack}) not found in _local_objects. "
                     "Object may have been garbage collected or removed via premature decref. "
                     "This indicates a race condition in reference counting."
                 ) from None

@@ -73,11 +73,13 @@ class WeakValueDict(object):
 
 class RefCountingColl(object):
     """a set-like object that implements refcounting on its contained objects"""
-    __slots__ = ("_lock", "_dict")
+    __slots__ = ("_lock", "_dict", "_logger", "_debug")
 
-    def __init__(self):
+    def __init__(self, logger=None, debug=False):
         self._lock = Lock()
         self._dict = {}
+        self._logger = logger
+        self._debug = debug
 
     def __repr__(self):
         return repr(self._dict)
@@ -88,8 +90,25 @@ class RefCountingColl(object):
             slot = self._dict.get(key, None)
             if slot is None:
                 slot = [obj, 0]
+                if self._debug and self._logger:
+                    try:
+                        obj_repr = repr(obj)
+                        # Truncate very long reprs
+                        if len(obj_repr) > 200:
+                            obj_repr = obj_repr[:200] + "..."
+                    except Exception:
+                        obj_repr = f"<{type(obj).__name__} at {id(obj):#x}>"
+                    self._logger.debug(f"[REFCOUNT] ADD {key} -> {obj_repr} (refcount=0)")
             else:
                 slot[1] += 1
+                if self._debug and self._logger:
+                    try:
+                        obj_repr = repr(obj)
+                        if len(obj_repr) > 200:
+                            obj_repr = obj_repr[:200] + "..."
+                    except Exception:
+                        obj_repr = f"<{type(obj).__name__} at {id(obj):#x}>"
+                    self._logger.debug(f"[REFCOUNT] INCREF {key} -> {obj_repr} (refcount={slot[1]})")
             self._dict[key] = slot
 
     def clear(self):
@@ -100,9 +119,25 @@ class RefCountingColl(object):
         with self._lock:
             slot = self._dict[key]
             if slot[1] < count:
+                if self._debug and self._logger:
+                    try:
+                        obj_repr = repr(slot[0])
+                        if len(obj_repr) > 200:
+                            obj_repr = obj_repr[:200] + "..."
+                    except Exception:
+                        obj_repr = f"<{type(slot[0]).__name__} at {id(slot[0]):#x}>"
+                    self._logger.debug(f"[REFCOUNT] DELETE {key} -> {obj_repr} (refcount was {slot[1]}, decref by {count})")
                 del self._dict[key]
             else:
                 slot[1] -= count
+                if self._debug and self._logger:
+                    try:
+                        obj_repr = repr(slot[0])
+                        if len(obj_repr) > 200:
+                            obj_repr = obj_repr[:200] + "..."
+                    except Exception:
+                        obj_repr = f"<{type(slot[0]).__name__} at {id(slot[0]):#x}>"
+                    self._logger.debug(f"[REFCOUNT] DECREF {key} -> {obj_repr} (refcount={slot[1]})")
                 self._dict[key] = slot
 
     def __getitem__(self, key):
