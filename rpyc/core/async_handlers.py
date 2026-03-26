@@ -65,7 +65,17 @@ async def _handle_async_call(
         return result
 
     # Case 2: obj is async function - call and await
-    if inspect.iscoroutinefunction(obj):
+    # CRITICAL FIX: Safely handle netref objects
+    # inspect.iscoroutinefunction() may fail on netref due to inability to access
+    # private attributes like __code__. In this case, assume it's NOT a coroutine
+    # function and try calling it normally.
+    try:
+        is_coro_func = inspect.iscoroutinefunction(obj)
+    except (AttributeError, TypeError):
+        # Failed to inspect (likely netref) - assume sync function
+        is_coro_func = False
+
+    if is_coro_func:
         coro = obj(*args, **kwargs_dict)
         result = await coro
         return result

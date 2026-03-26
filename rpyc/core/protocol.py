@@ -1185,9 +1185,33 @@ class Connection(object):
         plain |= config["allow_exposed_attrs"] and name.startswith(prefix)
         plain |= config["allow_safe_attrs"] and name in config["safe_attrs"]
         plain |= config["allow_public_attrs"] and not name.startswith("_")
-        has_exposed = prefix and (hasattr(obj, prefix + name) or hasattr_static(obj, prefix + name))
-        if plain and (not has_exposed or hasattr(obj, name)):
-            return name
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # CRITICAL FIX: Avoid hasattr() on netref objects to prevent recursion
+        # ═══════════════════════════════════════════════════════════════════════════
+        # When obj is a netref, hasattr(obj, attr) triggers __getattribute__() which
+        # makes a remote call back to the server. If the server's _check_attr() also
+        # uses hasattr(), this creates infinite recursion (observed in a downstream application).
+        #
+        # Solution: For netref objects, only use hasattr_static() which doesn't trigger
+        # __getattribute__(). This breaks the recursion cycle.
+        #
+        # For regular (non-netref) objects, use hasattr() for exposed check and plain check.
+        is_netref = isinstance(obj, netref.BaseNetref)
+
+        if is_netref:
+            # For netref: only use hasattr_static (no remote calls)
+            has_exposed = prefix and hasattr_static(obj, prefix + name)
+            # For netref: skip hasattr() check in plain validation (would cause recursion)
+            # Instead, rely on the remote side to validate when the attribute is accessed
+            if plain and not has_exposed:
+                return name
+        else:
+            # For regular objects: use hasattr() as before (safe, no recursion)
+            has_exposed = prefix and (hasattr(obj, prefix + name) or hasattr_static(obj, prefix + name))
+            if plain and (not has_exposed or hasattr(obj, name)):
+                return name
+
         if has_exposed:
             return prefix + name
         if plain:
