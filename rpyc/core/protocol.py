@@ -446,7 +446,30 @@ class Connection(object):
         if type(obj) is tuple:
             return consts.LABEL_TUPLE, tuple(self._box(item) for item in obj)
         elif isinstance(obj, netref.BaseNetref) and obj.____conn__ is self:
-            return consts.LABEL_LOCAL_REF, obj.____id_pack__
+            # Netref points to object in THIS connection
+            # Check if object still exists in _local_objects before using LABEL_LOCAL_REF
+            id_pack = obj.____id_pack__
+            if id_pack in self._local_objects._dict:
+                # Object exists - use LABEL_LOCAL_REF (efficient)
+                return consts.LABEL_LOCAL_REF, id_pack
+            else:
+                # Object NOT in _local_objects
+                # This can mean:
+                # 1. Object was removed via premature decref (BUG - needs fixing)
+                # 2. This is a PROXY to remote object that was created via LABEL_REMOTE_REF
+                #    (____conn__ points to THIS connection but object lives on REMOTE side)
+                #
+                # In both cases, we should use LABEL_REMOTE_REF to avoid KeyError
+                logger = self._config.get("logger")
+                if logger:
+                    logger.debug(
+                        f"Netref {id_pack} not in _local_objects. "
+                        f"Using LABEL_REMOTE_REF (proxy to remote object or after decref)."
+                    )
+                # Determine if async or sync
+                is_async = getattr(obj, "____is_async__", False)
+                flags = consts.FLAGS_ASYNC if is_async else consts.FLAGS_SYNC
+                return consts.LABEL_REMOTE_REF, (*id_pack, flags)
         else:
             id_pack = get_id_pack(obj)
             self._local_objects.add(id_pack, obj)
@@ -483,7 +506,24 @@ class Connection(object):
         if label == consts.LABEL_TUPLE:
             return tuple(self._unbox(item) for item in value)
         if label == consts.LABEL_LOCAL_REF:
-            return self._local_objects[value]
+            # Try to retrieve object from _local_objects
+            # Add defensive error handling for missing objects (e.g., premature decref)
+            try:
+                return self._local_objects[value]
+            except KeyError:
+                # Object missing from _local_objects - likely removed via decref
+                # while still being referenced by remote side
+                logger = self._config.get("logger")
+                if logger:
+                    logger.error(
+                        f"LABEL_LOCAL_REF points to missing object {value}. "
+                        f"Object may have been garbage collected or improperly reference counted."
+                    )
+                raise ValueError(
+                    f"Local object {value} not found in _local_objects. "
+                    "Object may have been garbage collected or removed via premature decref. "
+                    "This indicates a race condition in reference counting."
+                ) from None
         if label == consts.LABEL_REMOTE_REF:
             # ═══════════════════════════════════════════════════
             # NEW (v5.1): Handle extended id_pack format
@@ -499,6 +539,16 @@ class Connection(object):
                 flags = consts.FLAGS_SYNC  # Default: sync object
             else:
                 raise ValueError(f"Invalid id_pack length: {len(value)}")
+
+            # ═══════════════════════════════════════════════════
+            # IMPORTANT FIX: Check if object is actually LOCAL
+            # ═══════════════════════════════════════════════════
+            # If LABEL_REMOTE_REF points to object in OUR _local_objects,
+            # return the local object directly instead of creating a proxy.
+            # This handles the case where a proxy to remote object is sent back.
+            if id_pack in self._local_objects._dict:
+                # Object is actually local! Return it directly.
+                return self._local_objects[id_pack]
 
             proxy = self._proxy_cache.get(id_pack)  # Ensure referents exist until we increment refcount issue #558
             if proxy is not None:
@@ -1223,14 +1273,23 @@ class Connection(object):
         return tuple(dir(obj))
 
     def _handle_inspect(self, id_pack):  # request handler
-        if hasattr(self._local_objects[id_pack], '____conn__'):
+        # Check if object exists in _local_objects
+        try:
+            obj = self._local_objects[id_pack]
+        except KeyError:
+            raise ValueError(
+                f"Cannot inspect object {id_pack}: not found in _local_objects. "
+                "Object may have been garbage collected or removed via premature decref."
+            ) from None
+
+        if hasattr(obj, '____conn__'):
             # When RPyC is chained (RPyC over RPyC), id_pack is cached in local objects as a netref
             # since __mro__ is not a safe attribute the request is forwarded using the proxy connection
             # see issue #346 or tests.test_rpyc_over_rpyc.Test_rpyc_over_rpyc
-            conn = self._local_objects[id_pack].____conn__
+            conn = obj.____conn__
             return conn.sync_request(consts.HANDLE_INSPECT, id_pack)
         else:
-            return tuple(get_methods(netref.LOCAL_ATTRS, self._local_objects[id_pack]))
+            return tuple(get_methods(netref.LOCAL_ATTRS, obj))
 
     def _handle_getattr(self, obj, name):  # request handler
         return self._access_attr(obj, name, (), "_rpyc_getattr", "allow_getattr", getattr)
