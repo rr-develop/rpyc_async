@@ -459,13 +459,14 @@ class Connection(object):
 
     async def _process_pending_deletions(self) -> None:
         """
-        Process all pending netref deletions (placeholder).
+        Process all pending netref deletions in batch.
 
-        This will be implemented in Phase 2.2.
-        For now, just drain the queue to prevent it from growing.
+        Collects all pending deletions from queue, groups them by id_pack
+        (to batch multiple deletions of same object), checks for resurrection,
+        and sends HANDLE_DEL with acknowledgment.
         """
-        # Placeholder implementation - just drain queue
-        batch = []
+        # Collect all pending deletions from queue (non-blocking)
+        batch: List[Tuple[Tuple[str, int, int], int]] = []
         while not self._pending_deletions.empty():
             try:
                 item = self._pending_deletions.get_nowait()
@@ -473,9 +474,88 @@ class Connection(object):
             except:
                 break
 
-        # TODO Phase 2.2: Implement actual batch processing with acknowledgment
-        # For now, just clear the batch (prevents queue from growing during tests)
-        pass
+        if not batch:
+            return  # Nothing to process
+
+        # Group deletions by id_pack and sum refcounts
+        deletions: Dict[Tuple[str, int, int], int] = {}
+        for id_pack, refcount in batch:
+            deletions[id_pack] = deletions.get(id_pack, 0) + refcount
+
+        # Process each unique id_pack
+        for id_pack, total_refcount in deletions.items():
+            try:
+                # ═══════════════════════════════════════════════════
+                # Phase 3: Resurrection check (race condition prevention)
+                # ═══════════════════════════════════════════════════
+                # Check if netref was resurrected (re-created) after deletion was queued
+                proxy = self._proxy_cache.get(id_pack)
+                if proxy is not None:
+                    # Netref resurrected - cancel deletion
+                    logger = self._config.get("logger")
+                    if logger:
+                        logger.debug(
+                            f"[CLEANUP] Netref {id_pack} resurrected - "
+                            f"cancelling deletion"
+                        )
+                    continue
+
+                # Send HANDLE_DEL with acknowledgment
+                result = await self._async_request_with_ack(
+                    consts.HANDLE_DEL,
+                    id_pack,
+                    total_refcount,
+                    timeout=self._cleanup_ack_timeout
+                )
+
+                if not result:
+                    # Deletion failed or timed out - log warning
+                    logger = self._config.get("logger")
+                    if logger:
+                        logger.warning(
+                            f"Failed to delete remote object {id_pack}. "
+                            f"Possible memory leak on remote side."
+                        )
+            except Exception as e:
+                # Log error but continue processing other deletions
+                logger = self._config.get("logger")
+                if logger:
+                    logger.error(
+                        f"Error deleting remote object {id_pack}: {e}",
+                        exc_info=True
+                    )
+
+    async def _async_request_with_ack(
+        self,
+        handler: int,
+        *args: Any,
+        timeout: float = 5.0
+    ) -> Any:
+        """
+        Send async request and wait for acknowledgment with timeout.
+
+        Args:
+            handler: Request handler constant (e.g., HANDLE_DEL)
+            *args: Arguments to pass to handler
+            timeout: Timeout in seconds (default from config)
+
+        Returns:
+            Response from remote side, or False on timeout/error
+        """
+        try:
+            # Create AsyncResult for tracking response
+            res = AsyncResult(self)
+
+            # Send async request
+            self._async_request(handler, args, res)
+
+            # Wait for response with timeout
+            result = await asyncio.wait_for(res, timeout=timeout)
+            return result
+        except asyncio.TimeoutError:
+            return False  # Timeout treated as failure
+        except Exception:
+            return False  # Any error treated as failure
 
     # ═══════════════════════════════════════════════════════════════
     # End Asyncio Integration
@@ -1399,7 +1479,25 @@ class Connection(object):
         return self._local_root
 
     def _handle_del(self, obj, count=1):  # request handler
-        self._local_objects.decref(get_id_pack(obj), count)
+        """
+        Handle netref deletion request.
+
+        NEW (v5.2): Returns acknowledgment with deletion status.
+
+        Args:
+            obj: Object identifier (id_pack)
+            count: Refcount to decrement
+
+        Returns:
+            dict: {"deleted": bool, "id_pack": tuple}
+        """
+        id_pack = get_id_pack(obj)
+        deleted = self._local_objects.decref(id_pack, count)
+
+        return {
+            "deleted": deleted,
+            "id_pack": id_pack
+        }
 
     def _handle_repr(self, obj):  # request handler
         return repr(obj)
