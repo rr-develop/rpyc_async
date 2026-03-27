@@ -10,6 +10,10 @@ import collections
 import concurrent.futures as c_futures
 import os
 import threading
+import asyncio
+import weakref
+from queue import Queue
+from typing import Optional, Tuple, Any, Dict
 
 from threading import Lock, Condition, RLock
 from rpyc.lib import spawn, Timeout, get_methods, get_id_pack, hasattr_static
@@ -74,6 +78,10 @@ DEFAULT_CONFIG = dict(
     before_closed=None,
     close_catchall=False,
     bind_threads=os.environ.get('RPYC_BIND_THREADS') == 'true',
+    # NETREF LIFECYCLE (v5.2)
+    cleanup_interval=2.0,  # Background cleanup runs every N seconds
+    cleanup_ack_timeout=5.0,  # Timeout for HANDLE_DEL acknowledgment
+    debug_refcounting=False,  # Enable debug logging for refcount operations
 )
 """
 The default configuration dictionary of the protocol. You can override these parameters
@@ -196,6 +204,17 @@ class Connection(object):
         self._asyncio_enabled = False       # Async serving enabled?
         self._loop_fd_registered = False    # FD registered in loop?
         self._registered_fd = None          # Saved FD for cleanup
+        # ═══════════════════════════════════════════════════════════════
+        # Netref Lifecycle Management (v5.2)
+        # ═══════════════════════════════════════════════════════════════
+        # Queue for pending netref deletions: (id_pack, refcount) tuples
+        self._pending_deletions: Queue[Tuple[Tuple[str, int, int], int]] = Queue()
+        # Background cleanup task
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_running: bool = False
+        # Cleanup configuration
+        self._cleanup_interval: float = self._config.get("cleanup_interval", 2.0)
+        self._cleanup_ack_timeout: float = self._config.get("cleanup_ack_timeout", 5.0)
 
     def __del__(self):
         self.close()
