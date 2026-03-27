@@ -587,6 +587,21 @@ class Connection(object):
                 proxy = self._netref_factory(id_pack)
                 self._proxy_cache[id_pack] = proxy
 
+                # ═══════════════════════════════════════════════════
+                # NEW (v5.2): Register cleanup callback for netref
+                # ═══════════════════════════════════════════════════
+                # Store the proxy's refcount in a mutable container.
+                # This will be read by netref.__del__ and passed to callback.
+                # We store it as a list so we can update it when refcount changes.
+                refcount_holder = {"id_pack": id_pack, "refcount": proxy.____refcount__}
+
+                # Attach refcount holder to proxy so __del__ can update it
+                object.__setattr__(proxy, "_refcount_holder", refcount_holder)
+                object.__setattr__(proxy, "_cleanup_connection", self)
+
+                # No finalizer registration here - we'll use __del__ instead
+                # (but __del__ won't do I/O, just queue deletion)
+
             # ═══════════════════════════════════════════════════
             # NEW (v5.1): Attach async metadata to proxy
             # ═══════════════════════════════════════════════════

@@ -110,17 +110,47 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
                 remote-instance-id := id object instance (hits or misses on proxy cache)
         id_pack is usually created by rpyc.lib.get_id_pack
     """
-    __slots__ = ["____conn__", "____id_pack__", "__weakref__", "____refcount__", "____is_async__"]
+    __slots__ = [
+        "____conn__",
+        "____id_pack__",
+        "__weakref__",
+        "____refcount__",
+        "____is_async__",
+        "_refcount_holder",     # NEW (v5.2): For cleanup callback
+        "_cleanup_connection"   # NEW (v5.2): Reference to connection
+    ]
 
     def __init__(self, conn, id_pack):
         object.__setattr__(self, "____conn__", conn)
         object.__setattr__(self, "____id_pack__", id_pack)
         object.__setattr__(self, "____refcount__", 1)
         object.__setattr__(self, "____is_async__", False)  # NEW (v5.1): Set by _unbox() if FLAGS_ASYNC
+        # NEW (v5.2): These will be set by _unbox() if cleanup callback is used
+        object.__setattr__(self, "_refcount_holder", None)
+        object.__setattr__(self, "_cleanup_connection", None)
 
     def __del__(self):
+        """
+        Netref destructor (v5.2).
+
+        New behavior: Instead of sending HANDLE_DEL immediately (blocking I/O),
+        queue the deletion for background cleanup if cleanup callback is registered.
+        """
         try:
-            asyncreq(self, consts.HANDLE_DEL, self.____refcount__)
+            # NEW (v5.2): Check if cleanup callback is registered
+            cleanup_conn = object.__getattribute__(self, "_cleanup_connection")
+            refcount_holder = object.__getattribute__(self, "_refcount_holder")
+
+            if cleanup_conn is not None and refcount_holder is not None:
+                # Use new cleanup mechanism - queue for background processing
+                refcount_holder["refcount"] = self.____refcount__
+                cleanup_conn._pending_deletions.put((
+                    refcount_holder["id_pack"],
+                    self.____refcount__
+                ))
+            else:
+                # Fallback to old mechanism for backward compatibility
+                asyncreq(self, consts.HANDLE_DEL, self.____refcount__)
         except Exception:
             # raised in a destructor, most likely on program termination,
             # when the connection might have already been closed.
