@@ -1,6 +1,10 @@
 from __future__ import with_statement
 import weakref
 from threading import Lock
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import logging
 
 
 class WeakValueDict(object):
@@ -72,24 +76,43 @@ class WeakValueDict(object):
 
 
 class RefCountingColl(object):
-    """a set-like object that implements refcounting on its contained objects"""
+    """
+    A set-like object that implements refcounting on its contained objects.
+
+    New behavior (v5.2):
+    - Initial refcount is 1 (registry acts as strong reference)
+    - decref() returns deletion status (True if deleted, False if still alive)
+    - Defensive checks prevent KeyError on missing keys
+    """
     __slots__ = ("_lock", "_dict", "_logger", "_debug")
 
-    def __init__(self, logger=None, debug=False):
-        self._lock = Lock()
-        self._dict = {}
-        self._logger = logger
-        self._debug = debug
+    def __init__(self, logger: Optional["logging.Logger"] = None, debug: bool = False) -> None:
+        self._lock: Lock = Lock()
+        # Dict structure: {id_pack: [object, refcount]}
+        self._dict: Dict[Tuple[str, int, int], List[Any]] = {}
+        self._logger: Optional["logging.Logger"] = logger
+        self._debug: bool = debug
 
     def __repr__(self):
         return repr(self._dict)
 
-    def add(self, key, obj):
-        """Add object to refcounting coll."""
+    def add(self, key: Tuple[str, int, int], obj: Any) -> None:
+        """
+        Add object to refcounting collection.
+
+        New behavior (v5.2):
+        - Initial refcount is 1 (registry acts as strong reference)
+        - Subsequent adds increment refcount
+
+        Args:
+            key: Object identifier (class_name, class_id, object_id)
+            obj: Object to store
+        """
         with self._lock:
             slot = self._dict.get(key, None)
             if slot is None:
-                slot = [obj, 0]
+                # NEW: Initial refcount is 1 (registry counts as reference)
+                slot = [obj, 1]
                 if self._debug and self._logger:
                     try:
                         obj_repr = repr(obj)
@@ -98,7 +121,7 @@ class RefCountingColl(object):
                             obj_repr = obj_repr[:200] + "..."
                     except Exception:
                         obj_repr = f"<{type(obj).__name__} at {id(obj):#x}>"
-                    self._logger.debug(f"[REFCOUNT] ADD {key} -> {obj_repr} (refcount=0)")
+                    self._logger.debug(f"[REFCOUNT] ADD {key} -> {obj_repr} (refcount=1)")
             else:
                 slot[1] += 1
                 if self._debug and self._logger:
@@ -115,10 +138,34 @@ class RefCountingColl(object):
         with self._lock:
             self._dict.clear()
 
-    def decref(self, key, count=1):
+    def decref(self, key: Tuple[str, int, int], count: int = 1) -> bool:
+        """
+        Decrement refcount for object.
+
+        New behavior (v5.2):
+        - Returns True if object was deleted (refcount reached 0)
+        - Returns False if object still alive (refcount > 0)
+        - Returns False if key not found (defensive, no KeyError)
+
+        Args:
+            key: Object identifier
+            count: Amount to decrement (default 1)
+
+        Returns:
+            True if object deleted, False otherwise
+        """
         with self._lock:
+            # NEW: Defensive check - return False if key not found
+            if key not in self._dict:
+                if self._logger:
+                    self._logger.warning(f"[REFCOUNT] DECREF on missing key {key}")
+                return False
+
             slot = self._dict[key]
-            if slot[1] < count:
+            slot[1] -= count
+
+            # Check if refcount reached 0 or below
+            if slot[1] <= 0:
                 if self._debug and self._logger:
                     try:
                         obj_repr = repr(slot[0])
@@ -126,10 +173,13 @@ class RefCountingColl(object):
                             obj_repr = obj_repr[:200] + "..."
                     except Exception:
                         obj_repr = f"<{type(slot[0]).__name__} at {id(slot[0]):#x}>"
-                    self._logger.debug(f"[REFCOUNT] DELETE {key} -> {obj_repr} (refcount was {slot[1]}, decref by {count})")
+                    self._logger.debug(
+                        f"[REFCOUNT] DELETE {key} -> {obj_repr} "
+                        f"(refcount was {slot[1] + count}, decref by {count})"
+                    )
                 del self._dict[key]
+                return True  # Object deleted
             else:
-                slot[1] -= count
                 if self._debug and self._logger:
                     try:
                         obj_repr = repr(slot[0])
@@ -139,7 +189,9 @@ class RefCountingColl(object):
                         obj_repr = f"<{type(slot[0]).__name__} at {id(slot[0]):#x}>"
                     self._logger.debug(f"[REFCOUNT] DECREF {key} -> {obj_repr} (refcount={slot[1]})")
                 self._dict[key] = slot
+                return False  # Object still alive
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Tuple[str, int, int]) -> Any:
+        """Get object by key"""
         with self._lock:
             return self._dict[key][0]
