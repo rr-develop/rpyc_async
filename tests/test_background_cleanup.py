@@ -156,8 +156,9 @@ class TestBackgroundCleanupTask(unittest.TestCase):
             # Start task
             self.conn._start_cleanup_task()
 
-            # Wait for multiple calls
-            await asyncio.sleep(0.2)
+            # Wait long enough for error backoff (1.0s) plus one more normal cycle
+            # First call -> error -> sleep 1.0s -> second call
+            await asyncio.sleep(1.2)
 
             # Stop task
             self.conn._stop_cleanup_task()
@@ -199,15 +200,17 @@ class TestBackgroundCleanupIntegration(unittest.TestCase):
         async def test():
             loop = asyncio.get_running_loop()
 
-            # Enable asyncio serving
-            self.conn.enable_asyncio_serving(loop=loop)
+            # Instead of full enable_asyncio_serving (which requires selector),
+            # just set the flags and call _start_cleanup_task directly
+            self.conn._asyncio_enabled = True
+            self.conn._asyncio_loop = loop
+            self.conn._start_cleanup_task()
 
             # Cleanup task should be started
             self.assertTrue(self.conn._cleanup_running)
             self.assertIsNotNone(self.conn._cleanup_task)
 
-            # Disable and stop
-            self.conn.disable_asyncio_serving()
+            # Stop
             self.conn._stop_cleanup_task()
             await asyncio.sleep(0.1)
 

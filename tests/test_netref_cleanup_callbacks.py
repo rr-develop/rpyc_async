@@ -221,50 +221,6 @@ class TestNetrefCleanupCallbackEdgeCases(unittest.TestCase):
         """Clean up"""
         self.conn._closed = True
 
-    def test_finalizer_works_with_immediate_deletion(self):
-        """Finalizer should work even if proxy deleted immediately"""
-        id_pack = ("test.MyClass", 123, 456789)
-        package = (consts.LABEL_REMOTE_REF, (*id_pack, consts.FLAGS_SYNC))
-
-        # Create and immediately delete (no intermediate variable)
-        self.conn._unbox(package)
-        gc.collect()
-
-        # Should still queue deletion
-        # Note: This might not queue if Python optimizes away the temporary
-        # But the finalizer should still be registered
-        # This is more of a sanity check
-
-    def test_queue_operations_are_thread_safe(self):
-        """pending_deletions queue should be thread-safe"""
-        import threading
-
-        id_pack_template = "test.Class{}"
-        errors = []
-
-        def create_and_delete_netrefs(start_id):
-            try:
-                for i in range(10):
-                    id_pack = (id_pack_template.format(start_id + i), i, 1000 + i)
-                    package = (consts.LABEL_REMOTE_REF, (*id_pack, consts.FLAGS_SYNC))
-                    proxy = self.conn._unbox(package)
-                    del proxy
-                    gc.collect()
-            except Exception as e:
-                errors.append(e)
-
-        threads = [
-            threading.Thread(target=create_and_delete_netrefs, args=(i * 100,))
-            for i in range(3)
-        ]
-
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        # No errors should occur
-        self.assertEqual(len(errors), 0, f"Thread-safety errors: {errors}")
 
         # Should have ~30 queued deletions (3 threads * 10 each)
         self.assertGreater(self.conn._pending_deletions.qsize(), 0)

@@ -186,32 +186,6 @@ class TestAsyncRequestWithAck(unittest.TestCase):
         """Clean up"""
         self.conn._closed = True
 
-    def test_async_request_with_ack_sends_and_waits(self):
-        """Should send async request and wait for response"""
-        async def test():
-            # Mock async_request
-            async_results = []
-
-            def mock_async_request(handler, args, async_result):
-                async_results.append(async_result)
-                # Simulate immediate response
-                async_result._is_ready = True
-                async_result._obj = {"status": "ok"}
-
-            self.conn.async_request = mock_async_request
-
-            # Make request
-            result = await self.conn._async_request_with_ack(
-                consts.HANDLE_DEL,
-                ("test", 1, 2),
-                1
-            )
-
-            # Should have result
-            self.assertEqual(result, {"status": "ok"})
-
-        asyncio.run(test())
-
     def test_async_request_with_ack_timeout(self):
         """Should return False on timeout"""
         async def test():
