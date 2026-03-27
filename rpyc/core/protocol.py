@@ -369,6 +369,11 @@ class Connection(object):
         self._loop_fd_registered = True
         self._registered_fd = fd  # Save FD for cleanup
 
+        # ═══════════════════════════════════════════════════════════════
+        # NEW (v5.2): Start background cleanup task
+        # ═══════════════════════════════════════════════════════════════
+        self._start_cleanup_task()
+
     def disable_asyncio_serving(self):
         """
         Disable asyncio-native serving.
@@ -394,6 +399,83 @@ class Connection(object):
 
         self._asyncio_enabled = False
         self._asyncio_loop = None
+
+    # ═══════════════════════════════════════════════════════════════
+    # NEW (v5.2): Background Cleanup Task
+    # ═══════════════════════════════════════════════════════════════
+
+    def _start_cleanup_task(self) -> None:
+        """
+        Start background cleanup task for netref garbage collection.
+
+        This task runs periodically (every cleanup_interval seconds) and
+        processes pending netref deletions in batches.
+
+        Note: Should only be called when asyncio serving is enabled.
+        """
+        if self._cleanup_running:
+            return  # Already running
+
+        if not self._asyncio_enabled or self._asyncio_loop is None:
+            return  # Can't start without event loop
+
+        self._cleanup_running = True
+
+        async def cleanup_loop() -> None:
+            """Main cleanup loop - runs until stopped"""
+            while self._cleanup_running and not self.closed:
+                try:
+                    # Process pending deletions
+                    await self._process_pending_deletions()
+
+                    # Wait before next cleanup cycle
+                    await asyncio.sleep(self._cleanup_interval)
+                except asyncio.CancelledError:
+                    # Task was cancelled - exit cleanly
+                    break
+                except Exception as e:
+                    # Log error but continue running
+                    logger = self._config.get("logger")
+                    if logger:
+                        logger.error(f"Error in cleanup loop: {e}", exc_info=True)
+                    # Back off briefly on error
+                    await asyncio.sleep(1.0)
+
+        # Create and start task in event loop
+        self._cleanup_task = self._asyncio_loop.create_task(cleanup_loop())
+
+    def _stop_cleanup_task(self) -> None:
+        """
+        Stop background cleanup task.
+
+        Cancels the cleanup task and waits for it to finish.
+        Safe to call multiple times.
+        """
+        self._cleanup_running = False
+
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            self._cleanup_task = None
+
+    async def _process_pending_deletions(self) -> None:
+        """
+        Process all pending netref deletions (placeholder).
+
+        This will be implemented in Phase 2.2.
+        For now, just drain the queue to prevent it from growing.
+        """
+        # Placeholder implementation - just drain queue
+        batch = []
+        while not self._pending_deletions.empty():
+            try:
+                item = self._pending_deletions.get_nowait()
+                batch.append(item)
+            except:
+                break
+
+        # TODO Phase 2.2: Implement actual batch processing with acknowledgment
+        # For now, just clear the batch (prevents queue from growing during tests)
+        pass
 
     # ═══════════════════════════════════════════════════════════════
     # End Asyncio Integration
