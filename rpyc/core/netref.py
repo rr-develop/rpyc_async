@@ -131,40 +131,47 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
 
     def __del__(self) -> None:
         """
-        Netref destructor (v5.2 - Phase 1: Error Detection).
+        Netref destructor (v5.2 - Phase 3: Single Mechanism).
 
-        Queue deletion for background cleanup. Cleanup callback MUST be registered
-        by _unbox(). If not registered, this indicates a bug in _unbox().
+        Queue deletion for background cleanup. Cleanup callback is ALWAYS registered
+        by _unbox() for all netrefs. No fallback mechanism exists.
 
-        Note: Old fallback mechanism (asyncreq) is deprecated and will be removed.
+        The deletion is queued in _pending_deletions and processed by background
+        cleanup task (if asyncio enabled) or during connection close.
         """
         try:
-            # NEW (v5.2): Check if cleanup callback is registered
+            # Get cleanup callback (MUST be present - registered by _unbox)
             cleanup_conn = object.__getattribute__(self, "_cleanup_connection")
             refcount_holder = object.__getattribute__(self, "_refcount_holder")
 
             if cleanup_conn is not None and refcount_holder is not None:
-                # Use new cleanup mechanism - queue for background processing
+                # Queue deletion for background processing (ONLY mechanism)
                 refcount_holder["refcount"] = self.____refcount__
                 cleanup_conn._pending_deletions.put((
                     refcount_holder["id_pack"],
                     self.____refcount__
                 ))
             else:
-                # ERROR DETECTION (Phase 1): Missing cleanup callback is a BUG
+                # This should NEVER happen - cleanup callback always registered
+                # If this occurs, it's a critical bug in _unbox()
                 import sys
-                id_pack = object.__getattribute__(self, "____id_pack__")
-                print(
-                    f"[NETREF_ERROR] Netref {id_pack} has no cleanup callback! "
-                    f"This is a bug in _unbox(). Using fallback (will be removed).",
-                    file=sys.stderr
-                )
-                # Temporary fallback (will be removed in Phase 3)
-                asyncreq(self, consts.HANDLE_DEL, self.____refcount__)
+                try:
+                    id_pack = object.__getattribute__(self, "____id_pack__")
+                    print(
+                        f"[NETREF_CRITICAL] Netref {id_pack} missing cleanup callback! "
+                        f"This is a BUG in _unbox(). Object will LEAK on remote side.",
+                        file=sys.stderr
+                    )
+                except:
+                    print(
+                        "[NETREF_CRITICAL] Netref missing cleanup callback and id_pack! "
+                        "Object will LEAK on remote side.",
+                        file=sys.stderr
+                    )
         except Exception:
-            # raised in a destructor, most likely on program termination,
-            # when the connection might have already been closed.
-            # it's safe to ignore all exceptions here
+            # Errors in __del__ cannot be raised (Python limitation)
+            # This catches exceptions during queue.put() or attribute access
+            # Most likely during program termination when connection is closed
             pass
 
     def __getattribute__(self, name):
