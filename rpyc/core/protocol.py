@@ -257,12 +257,22 @@ class Connection(object):
             except Exception:
                 pass
 
-    def close(self):  # IO
-        """closes the connection, releasing all held resources"""
+    def close(self) -> None:  # IO
+        """
+        Closes the connection, releasing all held resources.
+
+        NEW (v5.2): Processes any pending netref deletions before closing.
+        This ensures deletions are sent even if background cleanup task
+        wasn't running (e.g., non-asyncio connections).
+        """
         if self._closed:
             return
         try:
             self._closed = True
+
+            # NEW (v5.2 - Phase 4): Process pending deletions before close
+            self._process_pending_deletions_sync()
+
             # NEW (v5.1): Cleanup asyncio resources first
             self.disable_asyncio_serving()
             if self._config.get("before_closed"):
@@ -456,6 +466,66 @@ class Connection(object):
         if self._cleanup_task is not None:
             self._cleanup_task.cancel()
             self._cleanup_task = None
+
+    def _process_pending_deletions_sync(self) -> None:
+        """
+        Process pending netref deletions synchronously (for connection close).
+
+        This is a synchronous version of _process_pending_deletions() used
+        during connection close to ensure deletions are sent even if background
+        cleanup task wasn't running.
+
+        Note: Does not wait for acknowledgment (fire-and-forget) since connection
+        is closing anyway. This is acceptable as it's a best-effort attempt.
+        """
+        if self._pending_deletions.empty():
+            return  # Nothing to process
+
+        logger = self._config.get("logger")
+        if logger:
+            pending_count = self._pending_deletions.qsize()
+            logger.debug(
+                f"[CLEANUP] Processing {pending_count} pending deletions on close"
+            )
+
+        # Collect all pending deletions from queue
+        batch: List[Tuple[Tuple[str, int, int], int]] = []
+        while not self._pending_deletions.empty():
+            try:
+                item = self._pending_deletions.get_nowait()
+                batch.append(item)
+            except:
+                break
+
+        if not batch:
+            return
+
+        # Group deletions by id_pack and sum refcounts
+        deletions: Dict[Tuple[str, int, int], int] = {}
+        for id_pack, refcount in batch:
+            deletions[id_pack] = deletions.get(id_pack, 0) + refcount
+
+        # Send deletions (fire-and-forget, no acknowledgment on close)
+        for id_pack, total_refcount in deletions.items():
+            try:
+                # Resurrection check
+                proxy = self._proxy_cache.get(id_pack)
+                if proxy is not None:
+                    continue  # Netref resurrected - skip deletion
+
+                # Send HANDLE_DEL synchronously (no acknowledgment)
+                # Use sync_request which will fail silently if connection dead
+                try:
+                    self.sync_request(consts.HANDLE_DEL, id_pack, total_refcount)
+                except:
+                    # Connection may already be closed - ignore errors
+                    pass
+
+            except Exception as e:
+                if logger:
+                    logger.warning(
+                        f"[CLEANUP] Failed to send deletion for {id_pack}: {e}"
+                    )
 
     async def _process_pending_deletions(self) -> None:
         """
