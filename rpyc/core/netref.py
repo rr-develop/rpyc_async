@@ -129,12 +129,14 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
         object.__setattr__(self, "_refcount_holder", None)
         object.__setattr__(self, "_cleanup_connection", None)
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
-        Netref destructor (v5.2).
+        Netref destructor (v5.2 - Phase 1: Error Detection).
 
-        New behavior: Instead of sending HANDLE_DEL immediately (blocking I/O),
-        queue the deletion for background cleanup if cleanup callback is registered.
+        Queue deletion for background cleanup. Cleanup callback MUST be registered
+        by _unbox(). If not registered, this indicates a bug in _unbox().
+
+        Note: Old fallback mechanism (asyncreq) is deprecated and will be removed.
         """
         try:
             # NEW (v5.2): Check if cleanup callback is registered
@@ -149,7 +151,15 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
                     self.____refcount__
                 ))
             else:
-                # Fallback to old mechanism for backward compatibility
+                # ERROR DETECTION (Phase 1): Missing cleanup callback is a BUG
+                import sys
+                id_pack = object.__getattribute__(self, "____id_pack__")
+                print(
+                    f"[NETREF_ERROR] Netref {id_pack} has no cleanup callback! "
+                    f"This is a bug in _unbox(). Using fallback (will be removed).",
+                    file=sys.stderr
+                )
+                # Temporary fallback (will be removed in Phase 3)
                 asyncreq(self, consts.HANDLE_DEL, self.____refcount__)
         except Exception:
             # raised in a destructor, most likely on program termination,
