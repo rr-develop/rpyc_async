@@ -1555,13 +1555,15 @@ class Connection(object):
         NEW (v5.2): Returns acknowledgment with deletion status.
 
         Args:
-            obj: Object identifier (id_pack)
+            obj: Object identifier (id_pack tuple)
             count: Refcount to decrement
 
         Returns:
             dict: {"deleted": bool, "id_pack": tuple}
         """
-        id_pack = get_id_pack(obj)
+        # FIXED (v5.2): obj is already an id_pack tuple, don't call get_id_pack() on it!
+        # Calling get_id_pack() on an id_pack tuple creates a WRONG id_pack for the tuple itself
+        id_pack = obj  # obj IS the id_pack
         deleted = self._local_objects.decref(id_pack, count)
 
         return {
