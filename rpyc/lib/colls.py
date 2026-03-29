@@ -157,6 +157,9 @@ class RefCountingColl(object):
         with self._lock:
             # NEW: Defensive check - return False if key not found
             if key not in self._dict:
+                # ALWAYS log this error - it indicates a bug!
+                import sys
+                print(f"WARNING: [REFCOUNT] DECREF on missing key {key}", file=sys.stderr)
                 if self._logger:
                     self._logger.warning(f"[REFCOUNT] DECREF on missing key {key}")
                 return False

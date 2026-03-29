@@ -580,6 +580,13 @@ class Connection(object):
 
                 if not result:
                     # Deletion failed or timed out - log warning
+                    # ALWAYS log this error - it indicates a serious problem!
+                    import sys
+                    print(
+                        f"WARNING: Failed to delete remote object {id_pack}. "
+                        f"Possible memory leak on remote side.",
+                        file=sys.stderr
+                    )
                     logger = self._config.get("logger")
                     if logger:
                         logger.warning(
@@ -588,6 +595,14 @@ class Connection(object):
                         )
             except Exception as e:
                 # Log error but continue processing other deletions
+                # ALWAYS log this error - it indicates a serious problem!
+                import sys
+                import traceback
+                print(
+                    f"ERROR: Error deleting remote object {id_pack}: {e}",
+                    file=sys.stderr
+                )
+                traceback.print_exc(file=sys.stderr)
                 logger = self._config.get("logger")
                 if logger:
                     logger.error(
