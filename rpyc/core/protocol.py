@@ -182,7 +182,22 @@ class Connection(object):
         logger = self._config.get("logger")
         self._local_objects = RefCountingColl(logger=logger, debug=debug_refcount)
 
-        # Log refcount monitoring status to stderr for diagnostics
+        # ═══════════════════════════════════════════════════════════════
+        # CRITICAL: DO NOT REMOVE THIS DIAGNOSTIC MESSAGE!
+        # ═══════════════════════════════════════════════════════════════
+        # This INFO message serves multiple purposes:
+        # 1. Confirms that refcount error monitoring is active
+        # 2. Helps diagnose "logging not working" issues
+        # 3. Tracks connection lifecycle in logs
+        #
+        # Users NEED to see this to verify that error logging works.
+        # Without this, they can't distinguish between:
+        # - "No errors" (good)
+        # - "Errors silently suppressed" (bad)
+        #
+        # This is NOT spam. Each message = one connection established.
+        # If you see too many, reduce connection churn, don't hide the message.
+        # ═══════════════════════════════════════════════════════════════
         import sys
         connid = self._config.get("connid", "unknown")
         print(
@@ -588,8 +603,22 @@ class Connection(object):
                 )
 
                 if not result:
-                    # Deletion failed or timed out - log warning
-                    # ALWAYS log this error - it indicates a serious problem!
+                    # ═══════════════════════════════════════════════════════════════
+                    # CRITICAL: DO NOT REMOVE OR MODIFY THIS LOGGING!
+                    # ═══════════════════════════════════════════════════════════════
+                    # This warning indicates cleanup failure:
+                    # - HANDLE_DEL timeout (remote side slow/unresponsive)
+                    # - Network issues causing ack failure
+                    # - Remote process crashed during deletion
+                    #
+                    # This MUST be logged to stderr ALWAYS, regardless of logger config.
+                    # Consequences of hiding this error:
+                    # - Memory leaks on remote side accumulate silently
+                    # - Difficult to diagnose production performance degradation
+                    # - "Works on my machine" syndrome (local tests pass, prod fails)
+                    #
+                    # DO NOT "optimize away" this logging. It's critical diagnostics.
+                    # ═══════════════════════════════════════════════════════════════
                     import sys
                     print(
                         f"WARNING: Failed to delete remote object {id_pack}. "
@@ -603,8 +632,23 @@ class Connection(object):
                             f"Possible memory leak on remote side."
                         )
             except Exception as e:
-                # Log error but continue processing other deletions
-                # ALWAYS log this error - it indicates a serious problem!
+                # ═══════════════════════════════════════════════════════════════
+                # CRITICAL: DO NOT REMOVE OR MODIFY THIS LOGGING!
+                # ═══════════════════════════════════════════════════════════════
+                # This error in cleanup path is ALWAYS a bug that needs attention.
+                # Common causes:
+                # - Protocol desynchronization
+                # - Unexpected exception in HANDLE_DEL
+                # - Connection state corruption
+                #
+                # Full traceback MUST be logged to stderr for debugging.
+                # This is not "noise" - each exception here represents:
+                # - Potential memory leak
+                # - Broken cleanup mechanism
+                # - Production stability issue
+                #
+                # If you see this frequently, FIX THE BUG, don't hide the error.
+                # ═══════════════════════════════════════════════════════════════
                 import sys
                 import traceback
                 print(

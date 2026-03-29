@@ -157,7 +157,23 @@ class RefCountingColl(object):
         with self._lock:
             # NEW: Defensive check - return False if key not found
             if key not in self._dict:
-                # ALWAYS log this error - it indicates a bug!
+                # ═══════════════════════════════════════════════════════════════
+                # CRITICAL: DO NOT REMOVE OR MODIFY THIS LOGGING!
+                # ═══════════════════════════════════════════════════════════════
+                # This error indicates a serious bug in refcount management:
+                # - Race condition in netref lifecycle
+                # - Double deletion attempt
+                # - Cleanup desynchronization between client/server
+                #
+                # This MUST be logged to stderr ALWAYS, regardless of logger config.
+                # Silently ignoring this error leads to:
+                # - Hidden memory leaks
+                # - Difficult-to-debug production issues
+                # - Accumulated technical debt
+                #
+                # If you think this logging is "too verbose", you are wrong.
+                # Fix the underlying bug instead of hiding the symptom.
+                # ═══════════════════════════════════════════════════════════════
                 import sys
                 print(f"WARNING: [REFCOUNT] DECREF on missing key {key}", file=sys.stderr)
                 if self._logger:
