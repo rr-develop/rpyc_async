@@ -181,6 +181,15 @@ class Connection(object):
         debug_refcount = self._config.get("debug_refcounting", False)
         logger = self._config.get("logger")
         self._local_objects = RefCountingColl(logger=logger, debug=debug_refcount)
+
+        # Log refcount monitoring status to stderr for diagnostics
+        import sys
+        connid = self._config.get("connid", "unknown")
+        print(
+            f"INFO: RPyC Connection {connid} initialized. "
+            f"Refcount error monitoring: ENABLED (errors always logged to stderr)",
+            file=sys.stderr
+        )
         self._last_traceback = None
         self._proxy_cache = WeakValueDict()
         self._netref_classes_cache = {}
