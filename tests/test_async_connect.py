@@ -297,6 +297,60 @@ class TestAsyncConnect(unittest.IsolatedAsyncioTestCase):
 
         conn.close()
 
+    async def test_async_connect_root_ready_immediately(self):
+        """
+        TDD TEST: Verify that conn.root is ready immediately after async_connect.
+
+        CRITICAL: This test detects the bug where accessing conn.root blocks.
+        After fix, root should be pre-fetched during async_connect().
+        """
+        conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
+
+        # After async_connect, _remote_root should already be set
+        # This prevents blocking sync_request on first access
+        self.assertIsNotNone(conn._remote_root,
+                             "Bug detected: _remote_root is None after async_connect! "
+                             "This will cause blocking sync_request on first conn.root access.")
+
+        # Verify root works without blocking
+        root = conn.root
+        self.assertIsNotNone(root)
+
+        conn.close()
+
+    async def test_async_connect_no_blocking_on_root_access(self):
+        """
+        TDD TEST: Verify accessing conn.root doesn't block event loop.
+
+        This is the main bug fix test - ensures eager handshake prevents blocking.
+        """
+        import concurrent.futures
+
+        conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
+
+        # Create a task that should complete quickly
+        async def fast_task():
+            await asyncio.sleep(0.01)
+            return "completed"
+
+        # Start fast task
+        task = asyncio.create_task(fast_task())
+
+        # Access root (should NOT block event loop if handshake was eager)
+        start_time = asyncio.get_event_loop().time()
+        root = conn.root  # Should be instant - no RPC needed
+        elapsed = asyncio.get_event_loop().time() - start_time
+
+        # Accessing root should be instant (< 0.01s) since it was pre-fetched
+        self.assertLess(elapsed, 0.01,
+                        f"Accessing conn.root took {elapsed}s - likely doing sync_request!")
+
+        # Fast task should have completed (proves event loop wasn't blocked)
+        await asyncio.wait_for(task, timeout=0.1)
+        self.assertEqual(await task, "completed")
+
+        conn.close()
+
 
 
 

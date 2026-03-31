@@ -288,12 +288,16 @@ async def async_connect(
     This replaces rpyc.connect() which uses blocking socket.connect().
     Uses loop.sock_connect() for non-blocking TCP connection with a real socket.
 
+    NEW (v5.3): Performs eager handshake to fetch remote root object during connection.
+    This prevents blocking sync_request() on first access to conn.root in async context.
+
     Architecture:
         1. Create non-blocking socket
         2. loop.sock_connect(sock, (host, port)) - async connect
         3. SocketStream(sock) - standard RPyC socket stream
         4. Channel(stream) - RPyC packet layer
         5. service._connect(channel, config) - RPyC connection
+        6. Eager handshake: fetch root object asynchronously
 
     Args:
         host: hostname or IP address to connect to
@@ -304,7 +308,7 @@ async def async_connect(
         loop: event loop to use (None = get current loop)
 
     Returns:
-        RPyC Connection object
+        RPyC Connection object with _remote_root already fetched
 
     Raises:
         asyncio.TimeoutError: if connection times out
@@ -313,10 +317,11 @@ async def async_connect(
     Example:
         >>> loop = asyncio.get_running_loop()
         >>> conn = await async_connect("127.0.0.1", 18812, timeout=5.0)
-        >>> result = conn.root.some_method()  # Sync RPC call
+        >>> result = conn.root.some_method()  # NO blocking - root already fetched!
     """
     import socket as socket_module
     from rpyc.core.stream import SocketStream
+    from rpyc.core import consts
 
     if loop is None:
         loop = asyncio.get_running_loop()
@@ -351,6 +356,44 @@ async def async_connect(
         # Create RPyC channel and connection
         channel = Channel(stream)
         conn = service._connect(channel, config)
+
+        # ═══════════════════════════════════════════════════════════════
+        # NEW (v5.3): EAGER HANDSHAKE - Fetch root object asynchronously
+        # ═══════════════════════════════════════════════════════════════
+        # This prevents blocking sync_request() on first conn.root access.
+        # We use loop.run_in_executor() to run sync_request in thread pool,
+        # keeping event loop non-blocking.
+        #
+        # Why thread pool instead of AsyncResult.__await__()?
+        # - AsyncResult.__await__() requires asyncio serving enabled
+        # - We want async_connect() to work without enable_asyncio_serving()
+        # - Thread pool is simple and works in all cases
+        # ═══════════════════════════════════════════════════════════════
+        conn_timeout = config.get("sync_request_timeout", 30)
+        try:
+            if timeout:
+                # Use smaller of connection timeout and sync_request_timeout
+                handshake_timeout = min(timeout, conn_timeout)
+            else:
+                handshake_timeout = conn_timeout
+
+            # Run sync_request in thread pool to avoid blocking event loop
+            conn._remote_root = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,  # Use default ThreadPoolExecutor
+                    conn.sync_request,
+                    consts.HANDLE_GETROOT
+                ),
+                timeout=handshake_timeout
+            )
+        except asyncio.TimeoutError as e:
+            conn.close()
+            raise ConnectionError(
+                f"Handshake with {host}:{port} timed out after {handshake_timeout}s"
+            ) from e
+        except Exception as e:
+            conn.close()
+            raise ConnectionError(f"Handshake with {host}:{port} failed: {e}") from e
 
         return conn
 
