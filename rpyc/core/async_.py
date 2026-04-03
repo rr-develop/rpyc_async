@@ -179,21 +179,57 @@ class AsyncResult(object):
         # Register callback
         self.add_callback(on_result)
 
-        # Start background task to serve connection until result ready
-        async def serve_until_ready():
-            """Serve connection in background until result arrives."""
-            while not future.done() and not self._is_ready:
-                # Poll connection for incoming messages
-                await asyncio.sleep(0.001)  # Small delay to prevent CPU spinning
-                try:
-                    # Try to serve one message (non-blocking)
-                    self._conn.poll_all()
-                except Exception:
-                    # Connection closed or error
-                    break
+        # ═══════════════════════════════════════════════════════════════
+        # CRITICAL: NO POLLING FALLBACK!
+        # ═══════════════════════════════════════════════════════════════
+        # The previous implementation had a polling fallback that caused
+        # SEVERE CPU performance issues (1000+ polls/sec per async request).
+        #
+        # HIGH-CPU POLLING IS ABSOLUTELY PROHIBITED!
+        #
+        # Instead, we REQUIRE enable_asyncio_serving() to be called.
+        # This registers the socket with event loop for event-driven I/O.
+        #
+        # DO NOT re-add polling fallback under ANY circumstances!
+        # If you think polling is needed, you are wrong.
+        # Fix the real issue instead (missing enable_asyncio_serving call).
+        #
+        # Why no fallback?
+        # 1. Polling = 1000 wakeups/sec = unacceptable CPU usage
+        # 2. Users MUST use proper async patterns (enable_asyncio_serving)
+        # 3. Fail-fast is better than silent performance degradation
+        # ═══════════════════════════════════════════════════════════════
 
-        # Launch background serving task
-        asyncio.create_task(serve_until_ready())
+        # Check if asyncio serving is enabled
+        if not self._conn._asyncio_enabled:
+            # Fail immediately with clear instructions
+            raise RuntimeError(
+                "AsyncResult.__await__() requires asyncio serving to be enabled!\n"
+                "\n"
+                "Async RPC calls require event-driven I/O to avoid high-CPU polling.\n"
+                "\n"
+                "Solution:\n"
+                "  If using async_connect():\n"
+                "    - async_connect() auto-enables asyncio serving (v5.3.1+)\n"
+                "    - Upgrade rpyc_async if you see this error\n"
+                "\n"
+                "  If using rpyc.connect() in async context:\n"
+                "    conn = rpyc.connect('localhost', 18861)\n"
+                "    loop = asyncio.get_running_loop()\n"
+                "    conn.enable_asyncio_serving(loop)  # ← ADD THIS!\n"
+                "    result = await conn.root.async_method()\n"
+                "\n"
+                "  Server-side (use AsyncioServer, not ThreadedServer):\n"
+                "    from rpyc.utils.async_server import AsyncioServer\n"
+                "    server = AsyncioServer(MyService, port=18861)\n"
+                "    await server.start()\n"
+                "\n"
+                "See: docs/ASYNCIO_SERVER_MIGRATION.md for details"
+            )
+
+        # With asyncio serving enabled, the event loop will call on_readable()
+        # when data arrives, which calls _dispatch(), which calls on_result(),
+        # which sets future result. No polling needed!
 
         # Return future's awaitable
         return future.__await__()

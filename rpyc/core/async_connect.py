@@ -358,42 +358,19 @@ async def async_connect(
         conn = service._connect(channel, config)
 
         # ═══════════════════════════════════════════════════════════════
-        # NEW (v5.3): EAGER HANDSHAKE - Fetch root object asynchronously
+        # AUTO-ENABLE ASYNCIO SERVING
         # ═══════════════════════════════════════════════════════════════
-        # This prevents blocking sync_request() on first conn.root access.
-        # We use loop.run_in_executor() to run sync_request in thread pool,
-        # keeping event loop non-blocking.
+        # CRITICAL: Automatically enable asyncio serving to prevent
+        # high-CPU polling fallback in AsyncResult.__await__().
         #
-        # Why thread pool instead of AsyncResult.__await__()?
-        # - AsyncResult.__await__() requires asyncio serving enabled
-        # - We want async_connect() to work without enable_asyncio_serving()
-        # - Thread pool is simple and works in all cases
+        # This makes async_connect() fully ready for async operations:
+        # - Socket FD registered with event loop (event-driven I/O)
+        # - Incoming messages processed via on_readable() callback
+        # - Background cleanup task started
+        #
+        # Users no longer need to manually call enable_asyncio_serving()!
         # ═══════════════════════════════════════════════════════════════
-        conn_timeout = config.get("sync_request_timeout", 30)
-        try:
-            if timeout:
-                # Use smaller of connection timeout and sync_request_timeout
-                handshake_timeout = min(timeout, conn_timeout)
-            else:
-                handshake_timeout = conn_timeout
-
-            # Run sync_request in thread pool to avoid blocking event loop
-            conn._remote_root = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,  # Use default ThreadPoolExecutor
-                    conn.sync_request,
-                    consts.HANDLE_GETROOT
-                ),
-                timeout=handshake_timeout
-            )
-        except asyncio.TimeoutError as e:
-            conn.close()
-            raise ConnectionError(
-                f"Handshake with {host}:{port} timed out after {handshake_timeout}s"
-            ) from e
-        except Exception as e:
-            conn.close()
-            raise ConnectionError(f"Handshake with {host}:{port} failed: {e}") from e
+        conn.enable_asyncio_serving(loop=loop)
 
         return conn
 
