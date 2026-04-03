@@ -210,13 +210,20 @@ def run_refcount_error_server(port, ready_queue):
             """
             Call client callback in rapid succession.
             Tests concurrent netref creation/deletion.
+
+            FIXED: Netref calls return AsyncResult, not coroutines.
+            We need to wrap them in async functions for create_task().
             """
+            async def call_wrapper(i):
+                """Wrapper to convert AsyncResult to coroutine"""
+                # client_callback() returns AsyncResult (netref call)
+                # await converts it to actual result
+                return await client_callback({"burst_id": i, "data": f"burst_{i}"})
+
             tasks = []
             for i in range(burst_size):
-                # Create task that calls callback
-                task = asyncio.create_task(
-                    client_callback({"burst_id": i, "data": f"burst_{i}"})
-                )
+                # Create task with wrapper coroutine
+                task = asyncio.create_task(call_wrapper(i))
                 tasks.append(task)
 
             # Wait for all callbacks to complete
