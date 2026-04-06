@@ -1,6 +1,8 @@
 """
 Helpers and wrappers for common RPyC tasks
 """
+from __future__ import annotations
+
 import time
 from rpyc.lib import spawn
 from rpyc.lib.colls import WeakValueDict
@@ -363,3 +365,269 @@ def is_async_capable(obj):
         False
     """
     return is_async_function(obj) or is_coroutine(obj)
+
+
+# ============================================================================
+# Fire and Forget Utilities (v5.2)
+# ============================================================================
+import asyncio
+import sys
+from typing import TypeVar, Callable as CallableType, Awaitable
+
+T = TypeVar('T')
+
+
+async def run_with_callbacks(
+    awaitable: Awaitable[T],
+    *,
+    timeout: float | None = None,
+    success_callback: CallableType[[T], None] | None = None,
+    error_callback: CallableType[[BaseException], None] | None = None,
+) -> None:
+    """
+    Internal: Execute awaitable with timeout and sync callbacks.
+
+    This is a wrapper coroutine that:
+    1. Awaits the given awaitable with optional timeout
+    2. Calls success_callback on completion
+    3. Calls error_callback on exception (except CancelledError)
+
+    Args:
+        awaitable: Coroutine or awaitable to execute
+        timeout: Optional timeout in seconds
+        success_callback: Synchronous callback called with result on success
+        error_callback: Synchronous callback called with exception on failure
+
+    Note:
+        CancelledError is propagated without calling error_callback.
+        Exceptions in callbacks are logged to stderr but don't crash the task.
+    """
+    try:
+        if timeout is not None:
+            result = await asyncio.wait_for(awaitable, timeout=timeout)
+        else:
+            result = await awaitable
+
+        if success_callback is not None:
+            try:
+                success_callback(result)
+            except Exception as exc:
+                print(
+                    f"ERROR: Exception in fire_and_forget success_callback: {exc}",
+                    file=sys.stderr
+                )
+
+    except asyncio.CancelledError:
+        # Allow task cancellation to propagate
+        raise
+    except Exception as exc:
+        if error_callback is not None:
+            try:
+                error_callback(exc)
+            except Exception as callback_exc:
+                print(
+                    f"ERROR: Exception in fire_and_forget error_callback: {callback_exc}",
+                    file=sys.stderr
+                )
+        else:
+            # Log unhandled error to prevent silent failure
+            print(
+                f"ERROR: Unhandled exception in fire_and_forget: {exc}",
+                file=sys.stderr
+            )
+
+
+async def run_with_async_callbacks(
+    awaitable: Awaitable[T],
+    *,
+    timeout: float | None = None,
+    success_callback: CallableType[[T], Awaitable[None]] | None = None,
+    error_callback: CallableType[[BaseException], Awaitable[None]] | None = None,
+) -> None:
+    """
+    Internal: Execute awaitable with timeout and async callbacks.
+
+    This is a wrapper coroutine that:
+    1. Awaits the given awaitable with optional timeout
+    2. Awaits success_callback on completion
+    3. Awaits error_callback on exception (except CancelledError)
+
+    Args:
+        awaitable: Coroutine or awaitable to execute
+        timeout: Optional timeout in seconds
+        success_callback: Async callback called with result on success
+        error_callback: Async callback called with exception on failure
+
+    Note:
+        CancelledError is propagated without calling error_callback.
+        Exceptions in callbacks are logged to stderr but don't crash the task.
+    """
+    try:
+        if timeout is not None:
+            result = await asyncio.wait_for(awaitable, timeout=timeout)
+        else:
+            result = await awaitable
+
+        if success_callback is not None:
+            try:
+                await success_callback(result)
+            except Exception as exc:
+                print(
+                    f"ERROR: Exception in fire_and_forget_async success_callback: {exc}",
+                    file=sys.stderr
+                )
+
+    except asyncio.CancelledError:
+        # Allow task cancellation to propagate
+        raise
+    except Exception as exc:
+        if error_callback is not None:
+            try:
+                await error_callback(exc)
+            except Exception as callback_exc:
+                print(
+                    f"ERROR: Exception in fire_and_forget_async error_callback: {callback_exc}",
+                    file=sys.stderr
+                )
+        else:
+            # Log unhandled error to prevent silent failure
+            print(
+                f"ERROR: Unhandled exception in fire_and_forget_async: {exc}",
+                file=sys.stderr
+            )
+
+
+def fire_and_forget(
+    awaitable: Awaitable[T],
+    *,
+    timeout: float | None = None,
+    success_callback: CallableType[[T], None] | None = None,
+    error_callback: CallableType[[BaseException], None] | None = None,
+    name: str | None = None,
+) -> asyncio.Task[None]:
+    """
+    Execute an awaitable in the background without blocking.
+
+    Supports both local coroutines and cross-process async RPC calls.
+
+    CRITICAL: This function uses asyncio.get_running_loop() to ensure
+    we are operating in the main event loop. It will raise RuntimeError
+    if no event loop is running. Never creates additional loops or threads.
+
+    Args:
+        awaitable: Coroutine or AsyncResult to execute
+        timeout: Optional timeout in seconds
+        success_callback: Synchronous callback called with result on success
+        error_callback: Synchronous callback called with exception on failure
+        name: Optional task name for debugging
+
+    Returns:
+        asyncio.Task that can be optionally awaited or cancelled
+
+    Raises:
+        RuntimeError: If no event loop is running
+
+    Requirements:
+        - Must be called from within a running event loop (async context)
+        - For cross-process RPC: connection must use AsyncioServer
+        - For cross-process RPC: conn.enable_asyncio_serving() must be called
+
+    Example:
+        >>> # Local coroutine
+        >>> task = fire_and_forget(
+        ...     my_async_func(arg1, arg2),
+        ...     timeout=5.0,
+        ...     success_callback=lambda result: print(f"Got {result}"),
+        ...     error_callback=lambda exc: print(f"Error: {exc}"),
+        ... )
+
+        >>> # Cross-process RPC call (requires AsyncioServer)
+        >>> conn = await async_connect("localhost", 18861)
+        >>> # async_connect automatically enables asyncio serving
+        >>> task = fire_and_forget(
+        ...     conn.root.remote_async_func(arg1),
+        ...     timeout=10.0,
+        ...     error_callback=handle_rpc_error,
+        ... )
+    """
+    # Verify we're in a running event loop (will raise if not)
+    # CRITICAL: We must use get_running_loop() to ensure we're in the main loop
+    # Never create new loops or threads - this prevents deadlocks
+    loop = asyncio.get_running_loop()
+
+    # Create task in the current running loop
+    task = loop.create_task(
+        run_with_callbacks(
+            awaitable,
+            timeout=timeout,
+            success_callback=success_callback,
+            error_callback=error_callback,
+        ),
+        name=name,
+    )
+    return task
+
+
+def fire_and_forget_async(
+    awaitable: Awaitable[T],
+    *,
+    timeout: float | None = None,
+    success_callback: CallableType[[T], Awaitable[None]] | None = None,
+    error_callback: CallableType[[BaseException], Awaitable[None]] | None = None,
+    name: str | None = None,
+) -> asyncio.Task[None]:
+    """
+    Execute an awaitable in the background with async callbacks.
+
+    Supports both local coroutines and cross-process async RPC calls.
+
+    CRITICAL: This function uses asyncio.get_running_loop() to ensure
+    we are operating in the main event loop. It will raise RuntimeError
+    if no event loop is running. Never creates additional loops or threads.
+
+    Args:
+        awaitable: Coroutine or AsyncResult to execute
+        timeout: Optional timeout in seconds
+        success_callback: Async callback called with result on success
+        error_callback: Async callback called with exception on failure
+        name: Optional task name for debugging
+
+    Returns:
+        asyncio.Task that can be optionally awaited or cancelled
+
+    Raises:
+        RuntimeError: If no event loop is running
+
+    Requirements:
+        - Must be called from within a running event loop (async context)
+        - For cross-process RPC: connection must use AsyncioServer
+        - For cross-process RPC: conn.enable_asyncio_serving() must be called
+
+    Example:
+        >>> async def on_success(result):
+        ...     await log_result(result)
+        ...
+        >>> # Requires AsyncioServer on the other side
+        >>> task = fire_and_forget_async(
+        ...     conn.root.long_running_task(),
+        ...     timeout=30.0,
+        ...     success_callback=on_success,
+        ...     error_callback=log_error,
+        ... )
+    """
+    # Verify we're in a running event loop (will raise if not)
+    # CRITICAL: We must use get_running_loop() to ensure we're in the main loop
+    # Never create new loops or threads - this prevents deadlocks
+    loop = asyncio.get_running_loop()
+
+    # Create task in the current running loop
+    task = loop.create_task(
+        run_with_async_callbacks(
+            awaitable,
+            timeout=timeout,
+            success_callback=success_callback,
+            error_callback=error_callback,
+        ),
+        name=name,
+    )
+    return task
