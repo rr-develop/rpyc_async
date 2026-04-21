@@ -219,7 +219,6 @@ class TestE2EServerObjectToClient(unittest.TestCase):
                 self.server_process.kill()
                 self.server_process.join(timeout=1.0)
 
-    @unittest.skip("Exposes a pre-existing refcount race surfaced by event-driven cleanup: netref.__del__ on the client now signals the cleanup task immediately (no more 2-second polling timer), which races with the server still using the netref via stored references. Needs a separate fix in the refcounting protocol.")
     def test_server_object_passed_to_client(self):
         """
         Test that server can pass its own objects to client via netref,
@@ -308,7 +307,6 @@ class TestE2EServerObjectToClient(unittest.TestCase):
 
         asyncio.run(test())
 
-    @unittest.skip("Exposes pre-existing refcount race surfaced by event-driven cleanup. See docs/DESIGN_ASYNC_CONNECT_POLICY.md.")
     def test_multiple_server_objects(self):
         """
         Test that multiple server objects can be passed to client.
@@ -368,7 +366,6 @@ class TestE2EServerObjectToClient(unittest.TestCase):
 
         asyncio.run(test())
 
-    @unittest.skip("Exposes a pre-existing refcount race surfaced by event-driven cleanup: netref.__del__ on the client now signals the cleanup task immediately (no more 2-second polling timer), which races with the server still using the netref via stored references. Needs a separate fix in the refcounting protocol.")
     def test_server_object_multiple_method_calls(self):
         """
         Test that server object can be called multiple times within callback.

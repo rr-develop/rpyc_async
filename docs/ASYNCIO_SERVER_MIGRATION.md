@@ -83,6 +83,25 @@ awaited directly (`await conn.root.async_method(...)`).
 
 ---
 
+## Cleanup debounce knob (`cleanup_debounce`)
+
+See `docs/DESIGN_REFCOUNT_RACE_FIX.md`.
+
+Background netref cleanup coalesces GC bursts through a one-shot
+`loop.call_later` window, default **50 ms**. Tune via
+`protocol_config={"cleanup_debounce": 0.050}`:
+
+* Lower (e.g. 0.010) → cleanup wakes sooner; more sensitive to
+  `id()`-reuse races on heavy churn.
+* Higher (e.g. 0.200) → better batching; more memory retained per
+  cleanup cycle.
+* 0.0 → fire immediately (legacy).
+
+The debounce is a single scheduled callback per burst, NOT a polling
+loop. It coexists with the NO POLLING POLICY below.
+
+---
+
 ## NO POLLING POLICY — Strict Ban
 
 AsyncioServer and the asyncio-serving code path inside `Connection` **must not**

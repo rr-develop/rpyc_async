@@ -104,6 +104,16 @@ class RefCountingColl(object):
         - Initial refcount is 1 (registry acts as strong reference)
         - Subsequent adds increment refcount
 
+        v5.3 (variant A-lite, see docs/DESIGN_REFCOUNT_RACE_FIX.md):
+        - If the slot already exists but stores a DIFFERENT Python object
+          (``slot[0] is not obj``), treat this as an ``id()`` collision
+          — CPython recycled the id() after the original object was
+          evicted. Replace the slot fresh instead of incrementing the
+          refcount of the wrong object. The refcount for the stale
+          id_pack is intentionally dropped; nothing can reach the old
+          object through id_pack any more, so its prior refcount is
+          already meaningless.
+
         Args:
             key: Object identifier (class_name, class_id, object_id)
             obj: Object to store
@@ -122,6 +132,19 @@ class RefCountingColl(object):
                     except Exception:
                         obj_repr = f"<{type(obj).__name__} at {id(obj):#x}>"
                     self._logger.debug(f"[REFCOUNT] ADD {key} -> {obj_repr} (refcount=1)")
+            elif slot[0] is not obj:
+                # id() COLLISION — different Python object landed at the
+                # same address after the original was evicted. Reset the
+                # slot to the new object with a fresh refcount of 1.
+                # See docs/DESIGN_REFCOUNT_RACE_FIX.md §A-lite.
+                if self._logger:
+                    self._logger.warning(
+                        "[REFCOUNT] id() COLLISION on %s: slot was bound "
+                        "to %r (refcount=%d), rebinding to %r.",
+                        key, type(slot[0]).__name__, slot[1],
+                        type(obj).__name__,
+                    )
+                slot = [obj, 1]
             else:
                 slot[1] += 1
                 if self._debug and self._logger:

@@ -203,7 +203,6 @@ class TestNetrefIdentity(unittest.TestCase):
             self.server_process.kill()
             self.server_process.join(timeout=1.0)
 
-    @unittest.skip("Exposes pre-existing refcount race surfaced by event-driven cleanup.")
     def test_netref_identity_preserved(self):
         """
         Test that passing the same object twice results in identical netrefs.
@@ -278,7 +277,6 @@ class TestNetrefIdentity(unittest.TestCase):
         # Run async test
         asyncio.run(test())
 
-    @unittest.skip("Exposes pre-existing refcount race surfaced by event-driven cleanup. See docs/DESIGN_ASYNC_CONNECT_POLICY.md.")
     def test_different_objects_get_different_netrefs(self):
         """
         Test that different objects result in different netrefs.

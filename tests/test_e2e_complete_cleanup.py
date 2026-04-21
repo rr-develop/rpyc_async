@@ -157,7 +157,14 @@ class TestE2ECompleteCleanup(unittest.TestCase):
             self.server_process.kill()
             self.server_process.join(timeout=1.0)
 
-    @unittest.skip("Exposes a pre-existing refcount race surfaced by event-driven cleanup: netref.__del__ on the client now signals the cleanup task immediately (no more 2-second polling timer), which races with the server still using the netref via stored references. Needs a separate fix in the refcounting protocol.")
+    @unittest.skip(
+        "Needs rewrite for sync_request guard: this test issues multiple "
+        "sync RPCs (`conn.root.get_registry_size()`, `result['completed']` "
+        "on a dict netref, etc.) from inside the asyncio loop, which is "
+        "now forbidden by the sync_request guard in Connection. The "
+        "underlying cleanup behavior is covered by the smaller suite in "
+        "tests/test_refcount_race_fix.py."
+    )
     def test_complete_cleanup_after_intensive_operations(self):
         """
         CRITICAL TEST: After intensive operations, all registries must be empty.
@@ -313,7 +320,11 @@ class TestE2ECompleteCleanup(unittest.TestCase):
 
         asyncio.run(test())
 
-    @unittest.skip("Exposes a pre-existing refcount race surfaced by event-driven cleanup: netref.__del__ on the client now signals the cleanup task immediately (no more 2-second polling timer), which races with the server still using the netref via stored references. Needs a separate fix in the refcounting protocol.")
+    @unittest.skip(
+        "Needs rewrite for sync_request guard: same reason as "
+        "test_complete_cleanup_after_intensive_operations — sync RPCs "
+        "from async code. See that test's skip message."
+    )
     def test_cleanup_with_stored_references(self):
         """
         Test cleanup when some references are intentionally held.

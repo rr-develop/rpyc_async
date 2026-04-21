@@ -178,7 +178,6 @@ class TestE2ENetrefAsyncCallback(unittest.TestCase):
                 self.server_process.kill()
                 self.server_process.join(timeout=1.0)
 
-    @unittest.skip("Test-isolation flake under pytest-all-suite; passes in isolation. Needs separate fixture fix.")
     def test_netref_async_callback_basic(self):
         """
         Test passing client object as netref and calling its async method from server.
@@ -233,7 +232,6 @@ class TestE2ENetrefAsyncCallback(unittest.TestCase):
 
         asyncio.run(test())
 
-    @unittest.skip("Exposes pre-existing refcount race surfaced by event-driven cleanup. See docs/DESIGN_ASYNC_CONNECT_POLICY.md.")
     def test_netref_recursive_async_calls(self):
         """
         Test recursive async calls between server and client via netref.
@@ -297,7 +295,6 @@ class TestE2ENetrefAsyncCallback(unittest.TestCase):
 
         asyncio.run(test())
 
-    @unittest.skip("Exposes a pre-existing refcount race surfaced by event-driven cleanup: netref.__del__ on the client now signals the cleanup task immediately (no more 2-second polling timer), which races with the server still using the netref via stored references. Needs a separate fix in the refcounting protocol.")
     def test_multiple_netref_methods(self):
         """
         Test calling multiple different async methods on same netref object.

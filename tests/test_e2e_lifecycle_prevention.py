@@ -116,7 +116,6 @@ class TestE2ELifecyclePrevention(unittest.TestCase):
             self.server_process.kill()
             self.server_process.join(timeout=1.0)
 
-    @unittest.skip("Exposes pre-existing refcount race surfaced by event-driven cleanup.")
     def test_object_survives_local_deletion_while_server_holds_netref(self):
         """
         CRITICAL TEST: Object should not be deleted on client while
@@ -221,14 +220,6 @@ class TestE2ELifecyclePrevention(unittest.TestCase):
 
         asyncio.run(test())
 
-    @unittest.skip(
-        "Exposes a pre-existing refcount race surfaced by event-driven "
-        "cleanup: netref.__del__ on the client now signals the cleanup "
-        "task immediately (no more 2-second polling timer), which races "
-        "with the server still using the netref via S.store. Needs a "
-        "separate fix in the refcounting protocol (the server should not "
-        "lose _local_objects entries while it still holds references)."
-    )
     def test_multiple_objects_independent_lifecycle(self):
         """
         Multiple objects should have independent lifecycles.

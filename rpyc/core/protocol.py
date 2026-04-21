@@ -82,6 +82,15 @@ DEFAULT_CONFIG = dict(
     cleanup_interval=2.0,  # Background cleanup runs every N seconds
     cleanup_ack_timeout=5.0,  # Timeout for HANDLE_DEL acknowledgment
     debug_refcounting=False,  # Enable debug logging for refcount operations
+    # NETREF REFCOUNT RACE FIX (v5.3 — variant D)
+    # See docs/DESIGN_REFCOUNT_RACE_FIX.md.
+    # _signal_deletion_available schedules the "work available" event via
+    # `loop.call_later(cleanup_debounce, event.set)` — a ONE-SHOT timer, not
+    # a polling loop — so a burst of GC'd netrefs coalesces into a single
+    # cleanup wake-up. This gives the serving loop time to finish in-flight
+    # RPCs before HANDLE_DEL fan-out starts. Set to 0.0 to fire the event
+    # immediately (legacy behavior).
+    cleanup_debounce=0.050,
 )
 """
 The default configuration dictionary of the protocol. You can override these parameters
@@ -257,6 +266,15 @@ class Connection(object):
         # Cleanup configuration
         self._cleanup_interval: float = self._config.get("cleanup_interval", 2.0)
         self._cleanup_ack_timeout: float = self._config.get("cleanup_ack_timeout", 5.0)
+        # Debounce window for deletion-available signal. A tight GC burst
+        # on the peer coalesces into one cleanup wake-up over this window,
+        # avoiding HANDLE_DEL fan-out racing against in-flight RPC replies.
+        # See docs/DESIGN_REFCOUNT_RACE_FIX.md (variant D).
+        self._cleanup_debounce: float = self._config.get("cleanup_debounce", 0.050)
+        # Pending-flag for the debounce: True means a call_later is already
+        # armed and further _signal_deletion_available calls must coalesce
+        # with it instead of arming another timer.
+        self._signal_pending: bool = False
 
     def __del__(self):
         self.close()
@@ -613,8 +631,7 @@ class Connection(object):
         """Wake the background cleanup task when a new deletion is enqueued.
 
         Called from ``netref.__del__`` via ``_enqueue_deletion``. Safe to call
-        from any thread: the ``asyncio.Event.set()`` call is scheduled onto
-        the connection's event loop via ``call_soon_threadsafe``.
+        from any thread.
 
         ═══════════════════════════════════════════════════════════════════
         NO POLLING POLICY — why this exists:
@@ -622,20 +639,51 @@ class Connection(object):
         Even with nothing to clean up, it woke the loop 30 times/minute per
         connection. This signal replaces that timer: the cleanup loop sleeps
         on an ``asyncio.Event`` and wakes only when there IS work.
+
+        DEBOUNCE (variant D in docs/DESIGN_REFCOUNT_RACE_FIX.md):
+        Instead of firing the event immediately on every GC'd netref, we
+        arm a ONE-SHOT ``loop.call_later(debounce, fire)`` the first time
+        a burst starts. Subsequent calls within the window coalesce into
+        that same scheduled fire. This gives in-flight RPC replies a
+        chance to settle before the HANDLE_DEL fan-out starts, which
+        avoids racing reused ``id()`` slots (see §2.1 of the design doc).
+
+        This is NOT polling — it is one scheduled callback per burst.
         ═══════════════════════════════════════════════════════════════════
         """
         event = self._deletion_available
         loop = self._asyncio_loop
         if event is None or loop is None:
             return
+        # Debounce guard: if a fire is already pending, coalesce.
+        if self._signal_pending:
+            return
+        self._signal_pending = True
+
+        def _fire():
+            # Clear the pending-flag FIRST so that any signals arriving
+            # after this point start a new debounce window; then wake the
+            # cleanup task.
+            self._signal_pending = False
+            if self._deletion_available is not None:
+                self._deletion_available.set()
+
         try:
             if loop.is_closed():
+                self._signal_pending = False
                 return
-            loop.call_soon_threadsafe(event.set)
+            debounce = self._cleanup_debounce
+            if debounce <= 0:
+                # Legacy / opt-out: fire immediately.
+                loop.call_soon_threadsafe(_fire)
+            else:
+                # One-shot timer. Must be scheduled via call_soon_threadsafe
+                # because call_later itself is not thread-safe.
+                loop.call_soon_threadsafe(loop.call_later, debounce, _fire)
         except RuntimeError:
             # Loop is shutting down — cleanup will drain via
             # _process_pending_deletions_sync() in close().
-            pass
+            self._signal_pending = False
 
     def _enqueue_deletion(self, id_pack, refcount) -> None:
         """Queue a netref deletion and notify the background cleanup task.
@@ -1031,7 +1079,8 @@ class Connection(object):
             # Check if object still exists in _local_objects before using LABEL_LOCAL_REF
             id_pack = obj.____id_pack__
             if id_pack in self._local_objects._dict:
-                # Object exists - use LABEL_LOCAL_REF (efficient)
+                # Object exists - use LABEL_LOCAL_REF (efficient).
+                # (B disabled temporarily for bisection.)
                 return consts.LABEL_LOCAL_REF, id_pack
             else:
                 # Object NOT in _local_objects
