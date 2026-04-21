@@ -85,17 +85,25 @@ awaited directly (`await conn.root.async_method(...)`).
 
 ## Cleanup debounce knob (`cleanup_debounce`)
 
-See `docs/DESIGN_REFCOUNT_RACE_FIX.md`.
+See `docs/DESIGN_REFCOUNT_RACE_FIX_A.md`.
 
-Background netref cleanup coalesces GC bursts through a one-shot
-`loop.call_later` window, default **50 ms**. Tune via
-`protocol_config={"cleanup_debounce": 0.050}`:
+Background netref cleanup can coalesce GC bursts through a one-shot
+`loop.call_later` window. Default is **0.0** (fire immediately) because
+variant A (stable monotonic `id_pack[2]`) makes the `id()`-reuse race
+structurally impossible — debounce is no longer needed for correctness.
+It remains available as an opt-in throttle for pathological HANDLE_DEL
+fan-out:
 
-* Lower (e.g. 0.010) → cleanup wakes sooner; more sensitive to
-  `id()`-reuse races on heavy churn.
-* Higher (e.g. 0.200) → better batching; more memory retained per
-  cleanup cycle.
-* 0.0 → fire immediately (legacy).
+* 0.0 → fire immediately (default, best deletion latency).
+* Positive value, e.g. 0.050 → coalesce bursts; trades latency for
+  fewer round-trips.
+
+```python
+conn = await rpyc.async_connect(
+    "localhost", 18861,
+    config={"cleanup_debounce": 0.050},
+)
+```
 
 The debounce is a single scheduled callback per burst, NOT a polling
 loop. It coexists with the NO POLLING POLICY below.

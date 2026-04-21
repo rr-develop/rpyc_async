@@ -82,15 +82,22 @@ DEFAULT_CONFIG = dict(
     cleanup_interval=2.0,  # Background cleanup runs every N seconds
     cleanup_ack_timeout=5.0,  # Timeout for HANDLE_DEL acknowledgment
     debug_refcounting=False,  # Enable debug logging for refcount operations
-    # NETREF REFCOUNT RACE FIX (v5.3 — variant D)
-    # See docs/DESIGN_REFCOUNT_RACE_FIX.md.
-    # _signal_deletion_available schedules the "work available" event via
-    # `loop.call_later(cleanup_debounce, event.set)` — a ONE-SHOT timer, not
-    # a polling loop — so a burst of GC'd netrefs coalesces into a single
-    # cleanup wake-up. This gives the serving loop time to finish in-flight
-    # RPCs before HANDLE_DEL fan-out starts. Set to 0.0 to fire the event
-    # immediately (legacy behavior).
-    cleanup_debounce=0.050,
+    # NETREF REFCOUNT RACE FIX (v5.3)
+    # See docs/DESIGN_REFCOUNT_RACE_FIX.md (variant D) and
+    # docs/DESIGN_REFCOUNT_RACE_FIX_A.md (variant A — the real fix).
+    #
+    # Variant A (stable monotonic id_pack[2]) closes the id() reuse race
+    # at its source. The debounce (variant D) is retained as an opt-in
+    # throttle for pathological HANDLE_DEL fan-out, but the default is
+    # 0.0 — fire immediately — because there is no correctness reason to
+    # delay cleanup any more.
+    #
+    # Implementation: _signal_deletion_available schedules the "work
+    # available" event via `loop.call_later(cleanup_debounce, event.set)`
+    # — a ONE-SHOT timer, not a polling loop. A positive value will
+    # coalesce deletion bursts into a single cleanup wake-up; users on
+    # churn-heavy workloads can tune it up.
+    cleanup_debounce=0.0,
 )
 """
 The default configuration dictionary of the protocol. You can override these parameters
@@ -190,6 +197,28 @@ class Connection(object):
         debug_refcount = self._config.get("debug_refcounting", False)
         logger = self._config.get("logger")
         self._local_objects = RefCountingColl(logger=logger, debug=debug_refcount)
+
+        # ═══════════════════════════════════════════════════════════════
+        # REFCOUNT RACE FIX — variant A (full)
+        # See docs/DESIGN_REFCOUNT_RACE_FIX_A.md.
+        #
+        # Instead of id_pack[2] = id(obj) (which CPython recycles after
+        # GC), each _box of a Python instance gets a stable
+        # connection-local monotonic sequence number. The mapping lives
+        # in two data structures:
+        #
+        #  * _obj_to_seq_weak — WeakKeyDictionary for weakref-able
+        #    objects. Python GC evicts entries automatically.
+        #  * _obj_to_seq_by_id — id()-keyed fallback for un-weakref-able
+        #    types (bound methods, some built-ins). Safe because
+        #    _local_objects holds a strong ref while the seq is
+        #    meaningful; see design doc §3 "Why the id-fallback is safe".
+        # ═══════════════════════════════════════════════════════════════
+        self._id_pack_seq = itertools.count(1 << 40)
+        self._obj_to_seq_weak: "weakref.WeakKeyDictionary[Any, int]" = (
+            weakref.WeakKeyDictionary()
+        )
+        self._obj_to_seq_by_id: Dict[int, Tuple[Any, int]] = {}
 
         # ═══════════════════════════════════════════════════════════════
         # CRITICAL: DO NOT REMOVE THIS DIAGNOSTIC MESSAGE!
@@ -1025,6 +1054,151 @@ class Connection(object):
     def _get_seq_id(self):  # IO
         return next(self._seqcounter)
 
+    # ═══════════════════════════════════════════════════════════════════
+    # REFCOUNT RACE FIX — variant A (full): stable id_pack[2] allocator
+    # See docs/DESIGN_REFCOUNT_RACE_FIX_A.md.
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _alloc_stable_obj_id(self, obj) -> int:
+        """Return a connection-local, monotonic, stable integer id for ``obj``.
+
+        Contract:
+        * For classes (``inspect.isclass(obj)`` True) — returns 0.
+          Preserves the legacy ``id_pack[2] == 0 iff class`` convention.
+        * For every other object — returns a monotonically-allocated
+          integer that is **stable for the lifetime of ``obj`` on this
+          connection**.
+
+        The allocator replaces raw ``id(obj)`` in ``_box`` to close
+        variant §2.1 of the refcount race: CPython recycles ``id()``
+        after an object is collected, so two different short-lived
+        Python objects could end up sharing an ``id_pack`` and driving
+        stale ``HANDLE_DEL`` ops against the wrong slot. The stable
+        seq is never reused (``itertools.count`` is monotonic across
+        the connection's whole lifetime), so that class of bug is
+        structurally impossible.
+
+        Weakref-able objects route through ``_obj_to_seq_weak`` (a
+        ``WeakKeyDictionary``): GC evicts the entry automatically when
+        the object dies, freeing the seq for nothing in particular
+        (we never reuse seqs). Un-weakref-able objects (bound methods,
+        some built-ins) go through ``_obj_to_seq_by_id`` keyed by
+        ``id()``; that's safe because ``_local_objects`` holds a strong
+        ref while the seq is meaningful — ``id()`` cannot be reused
+        until after the registry slot is removed, at which point
+        ``_forget_stable_obj_id`` has already cleared the mapping.
+        """
+        import inspect
+        if inspect.isclass(obj):
+            return 0
+
+        # Fast path (weakref-able): already seen.
+        try:
+            return self._obj_to_seq_weak[obj]
+        except (KeyError, TypeError):
+            # KeyError: not yet seen.
+            # TypeError: object is not weakref-able (falls through to fallback).
+            pass
+
+        # Try weakref-able storage.
+        try:
+            weakref.ref(obj)
+            weakrefable = True
+        except TypeError:
+            weakrefable = False
+
+        if weakrefable:
+            seq = next(self._id_pack_seq)
+            try:
+                self._obj_to_seq_weak[obj] = seq
+            except TypeError:
+                # Rare: object says weakref.ref works but
+                # WeakKeyDictionary rejects it (e.g. unhashable).
+                # Route to id-fallback instead.
+                pass
+            else:
+                return seq
+
+        # id-fallback for un-weakref-able / unhashable objects.
+        py_id = id(obj)
+        entry = self._obj_to_seq_by_id.get(py_id)
+        if entry is not None and entry[0] is obj:
+            return entry[1]
+        # Either new or an id() collision. Both cases: assign a fresh
+        # seq. The registry's strong ref guarantees we don't overwrite
+        # a live entry — see design doc §3.
+        seq = next(self._id_pack_seq)
+        self._obj_to_seq_by_id[py_id] = (obj, seq)
+        return seq
+
+    def _stable_id_pack(self, obj) -> Tuple[str, int, int]:
+        """Build the id_pack for a local ``obj`` using the stable allocator.
+
+        This is the variant-A replacement for the ``get_id_pack(obj)``
+        call in ``_box``: the third slot comes from
+        ``_alloc_stable_obj_id`` instead of ``id(obj)``, eliminating
+        the CPython ``id()`` reuse race at its source.
+
+        Name-pack and type-id computation mirror ``rpyc.lib.get_id_pack``
+        so the rest of the stack (netref class factory, `_handle_inspect`)
+        sees exactly the shape it expects.
+        """
+        import inspect as _inspect
+        undef = object()
+        # Netrefs self-identify via ____id_pack__; respect that.
+        name_pack = getattr(obj, '____id_pack__', undef)
+        if name_pack is not undef:
+            return name_pack  # type: ignore[return-value]
+
+        obj_name = getattr(obj, '__name__', None)
+
+        if _inspect.ismodule(obj):
+            # Module objects. Module name becomes the name pack.
+            import sys as _sys
+            if obj_name and obj_name != 'module' and obj_name in _sys.modules:
+                name_pack = obj_name
+            else:
+                obj_cls = getattr(obj, '__class__', type(obj))
+                name_pack = f'{obj_cls.__module__}.{obj_name}'
+            return (name_pack, id(type(obj)), self._alloc_stable_obj_id(obj))
+
+        if not _inspect.isclass(obj):
+            obj_cls = getattr(obj, '__class__', type(obj))
+            name_pack = f'{obj_cls.__module__}.{obj_cls.__name__}'
+            return (name_pack, id(type(obj)), self._alloc_stable_obj_id(obj))
+
+        # Class path: third slot is 0 (unchanged contract).
+        name_pack = f'{obj.__module__}.{obj_name}'
+        return (name_pack, id(obj), 0)
+
+    def _forget_stable_obj_id(self, id_pack) -> None:
+        """Drop the stable-id mapping for ``id_pack`` once its
+        ``_local_objects`` slot is deleted (``decref`` reached 0).
+
+        Called from ``_handle_del`` after ``_local_objects.decref``
+        returns True. Only the id-fallback map needs explicit cleanup;
+        the ``WeakKeyDictionary`` prunes itself when the object dies.
+
+        We don't know which Python object the id_pack belonged to any
+        more — it may have been evicted from ``_local_objects`` already
+        — but we can scan ``_obj_to_seq_by_id`` for the matching seq
+        (``id_pack[2]``) and drop it. The map is bounded by the number
+        of live un-weakref-able boxed objects per connection, so the
+        scan is cheap.
+        """
+        if not isinstance(id_pack, tuple) or len(id_pack) < 3:
+            return
+        target_seq = id_pack[2]
+        if target_seq == 0:
+            return  # classes are never stored here
+        stale_key = None
+        for py_id, (_obj, seq) in self._obj_to_seq_by_id.items():
+            if seq == target_seq:
+                stale_key = py_id
+                break
+        if stale_key is not None:
+            self._obj_to_seq_by_id.pop(stale_key, None)
+
     def _send(self, msg, seq, args):  # IO
         data = brine.I1.pack(msg) + brine.dump((seq, args))  # see _dispatch
         if self._bind_threads:
@@ -1101,7 +1275,12 @@ class Connection(object):
                 flags = consts.FLAGS_ASYNC if is_async else consts.FLAGS_SYNC
                 return consts.LABEL_REMOTE_REF, (*id_pack, flags)
         else:
-            id_pack = get_id_pack(obj)
+            # REFCOUNT RACE FIX — variant A (full).
+            # Build id_pack via the stable-seq allocator instead of
+            # ``get_id_pack(obj)`` (which uses id(obj) and exposes us
+            # to CPython id() reuse — see
+            # docs/DESIGN_REFCOUNT_RACE_FIX_A.md).
+            id_pack = self._stable_id_pack(obj)
             self._local_objects.add(id_pack, obj)
 
             # ═══════════════════════════════════════════════════
@@ -2046,6 +2225,12 @@ class Connection(object):
         # Calling get_id_pack() on an id_pack tuple creates a WRONG id_pack for the tuple itself
         id_pack = obj  # obj IS the id_pack
         deleted = self._local_objects.decref(id_pack, count)
+
+        if deleted:
+            # variant A: free the stable-seq entry too. WeakKeyDictionary
+            # cleans itself up; the id-fallback dict needs the explicit
+            # scan. See docs/DESIGN_REFCOUNT_RACE_FIX_A.md §3.
+            self._forget_stable_obj_id(id_pack)
 
         return {
             "deleted": deleted,

@@ -104,15 +104,15 @@ class RefCountingColl(object):
         - Initial refcount is 1 (registry acts as strong reference)
         - Subsequent adds increment refcount
 
-        v5.3 (variant A-lite, see docs/DESIGN_REFCOUNT_RACE_FIX.md):
-        - If the slot already exists but stores a DIFFERENT Python object
-          (``slot[0] is not obj``), treat this as an ``id()`` collision
-          — CPython recycled the id() after the original object was
-          evicted. Replace the slot fresh instead of incrementing the
-          refcount of the wrong object. The refcount for the stale
-          id_pack is intentionally dropped; nothing can reach the old
-          object through id_pack any more, so its prior refcount is
-          already meaningless.
+        Note (v5.3, variant A, see docs/DESIGN_REFCOUNT_RACE_FIX_A.md):
+        An earlier commit added an "A-lite" collision guard here to
+        detect ``id()`` reuse — `slot[0] is not obj` would rebind the
+        slot fresh. That guard is **gone** because variant A (stable
+        monotonic seq in ``id_pack[2]``) makes the collision impossible
+        at the source. If you ever see an ``add(key, obj2)`` for a key
+        that already holds ``obj1 is not obj2``, it is a real bug in
+        the allocator / caller, not an id() race; debug at the call
+        site, don't paper over it here.
 
         Args:
             key: Object identifier (class_name, class_id, object_id)
@@ -132,19 +132,6 @@ class RefCountingColl(object):
                     except Exception:
                         obj_repr = f"<{type(obj).__name__} at {id(obj):#x}>"
                     self._logger.debug(f"[REFCOUNT] ADD {key} -> {obj_repr} (refcount=1)")
-            elif slot[0] is not obj:
-                # id() COLLISION — different Python object landed at the
-                # same address after the original was evicted. Reset the
-                # slot to the new object with a fresh refcount of 1.
-                # See docs/DESIGN_REFCOUNT_RACE_FIX.md §A-lite.
-                if self._logger:
-                    self._logger.warning(
-                        "[REFCOUNT] id() COLLISION on %s: slot was bound "
-                        "to %r (refcount=%d), rebinding to %r.",
-                        key, type(slot[0]).__name__, slot[1],
-                        type(obj).__name__,
-                    )
-                slot = [obj, 1]
             else:
                 slot[1] += 1
                 if self._debug and self._logger:

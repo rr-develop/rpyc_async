@@ -1,6 +1,9 @@
 # Design: Netref Refcount Race — Diagnosis and Fix
 
-Status: **One commit: D + A** (variant B removed after bisection; see §4).
+Status: **Superseded by full variant A** — see
+`docs/DESIGN_REFCOUNT_RACE_FIX_A.md`. This document is kept for the
+diagnosis and rationale; the A-lite approach it describes was a
+stepping stone and has been replaced.
 
 ## 1. Context
 

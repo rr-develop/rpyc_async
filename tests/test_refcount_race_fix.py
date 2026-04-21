@@ -38,44 +38,17 @@ from tests.support import get_free_port
 # ---------------------------------------------------------------------------
 
 
-class TestIdCollisionGuard(unittest.TestCase):
-    """``RefCountingColl.add`` must detect id() reuse and replace the slot
-    rather than incrementing the wrong object's refcount.
+class TestRefCountingCollAddIncrementsSameObject(unittest.TestCase):
+    """Legitimate reuse (same object boxed twice) must still incref.
 
-    Scenario (observed in the wild, see §2.1 of the design doc):
-    - A short-lived object A is boxed; slot = [A, 1].
-    - Something later calls add(key, B) with the SAME id_pack but B is a
-      different Python object — CPython recycled id().
-    - Without the guard, the old code did `slot[1] += 1` and B was never
-      registered; the peer pulled A back out of the registry.
+    Historical note: an earlier commit had a separate
+    ``TestIdCollisionGuard::test_add_with_same_key_but_different_object_rebinds_slot``
+    covering the A-lite collision-detection branch. Variant A (full —
+    stable monotonic ``id_pack[2]``) removed the possibility of that
+    collision, and the A-lite branch was deleted along with its test.
+    What remains is the positive case: adding the same object twice
+    must still produce refcount = 2.
     """
-
-    def test_add_with_same_key_but_different_object_rebinds_slot(self):
-        from rpyc.lib.colls import RefCountingColl
-
-        coll = RefCountingColl()
-        key = ("fake.cls", 12345, 67890)
-
-        a = {"id": "A"}
-        coll.add(key, a)
-        self.assertIs(coll._dict[key][0], a)
-        self.assertEqual(coll._dict[key][1], 1)
-
-        # Simulate id() reuse: same key, DIFFERENT Python object.
-        b = {"id": "B"}
-        coll.add(key, b)
-
-        self.assertIs(
-            coll._dict[key][0],
-            b,
-            "Slot must now hold B — old code kept A bound to this key.",
-        )
-        self.assertEqual(
-            coll._dict[key][1],
-            1,
-            "Refcount must reset to 1 (fresh slot), not accumulate from "
-            "the evicted A.",
-        )
 
     def test_add_with_same_key_and_same_object_still_increments(self):
         """Legitimate reuse (same object boxed twice) must still incref."""
