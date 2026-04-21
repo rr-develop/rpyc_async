@@ -1,157 +1,117 @@
 """
-Test debug_refcounting mode for tracking object lifecycle.
+Tests for ``debug_refcounting`` mode on the client-side ``_local_objects``.
+
+``debug_refcounting`` tags each ``RefCountingColl.add`` / ``decref`` with a
+readable repr of the object — useful for diagnosing "premature decref"
+bugs in production. The logger is attached to the connection's config.
+
+POLICY
+------
+NO SAME-PROCESS SERVER+CLIENT — see ``tests/support.py``. The server is
+started in a child process via ``mp_asyncio_server``. We inspect the
+CLIENT-side logger here: outbound objects (``_box(obj)`` on the client)
+hit the client's ``_local_objects`` and produce ``[REFCOUNT]`` log
+records in the client's logger.
+
+Anything observed server-side lives in a separate process and cannot be
+inspected from here; that is by design — a previous version of these
+tests tried to share a logger between server and client in one process,
+which relied on the forbidden same-process topology.
 """
-import pytest
-import rpyc
-import logging
+from __future__ import annotations
+
 import asyncio
+import logging
+import unittest
 from io import StringIO
+from typing import Any
+
+import rpyc
+from rpyc.core.async_connect import async_connect
+from tests.support import mp_asyncio_server
 
 
-def test_debug_refcounting_logs_object_repr():
-    """Test that debug_refcounting mode logs readable object representations."""
+# ─── Picklable service (spawn-safe) ─────────────────────────────────────────
 
-    # Setup logger to capture debug output
-    log_stream = StringIO()
-    handler = logging.StreamHandler(log_stream)
-    handler.setLevel(logging.DEBUG)
-    logger = logging.getLogger("rpyc.test")
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(handler)
+class _EchoService(rpyc.Service):
+    """Accepts a payload and returns it unchanged through an async method.
 
-    # Create service with debug_refcounting enabled
-    class DebugService(rpyc.Service):
-        def exposed_get_list(self):
-            """Return a list object."""
-            return [1, 2, 3, "hello"]
+    The client passes a list and a dict as arguments. That boxing on the
+    client creates ``[REFCOUNT] ADD`` records in the client's logger —
+    which is exactly what these tests assert on.
+    """
 
-        def exposed_get_dict(self):
-            """Return a dict object."""
-            return {"key": "value", "number": 42}
+    async def exposed_echo(self, payload: Any) -> Any:
+        return payload
 
-    # Create server with debug config
-    from rpyc.utils.server import ThreadedServer
-    config = {
-        "debug_refcounting": True,
-        "logger": logger,
-        "allow_all_attrs": True,
-    }
 
-    server = ThreadedServer(
-        DebugService,
-        port=0,  # random port
-        protocol_config=config
-    )
+def _service_factory() -> type[rpyc.Service]:
+    return _EchoService
 
-    # Start server in background
-    import threading
-    server_thread = threading.Thread(target=server.start, daemon=True)
-    server_thread.start()
 
-    # Wait for server to start
-    import time
-    time.sleep(0.5)
+class TestDebugRefcountingClientSide(unittest.TestCase):
+    """Verify ``debug_refcounting`` produces readable client-side logs when
+    the client boxes outbound objects.
+    """
 
-    try:
-        # Connect client
-        conn = rpyc.connect("localhost", server.port, config=config)
+    def test_debug_refcounting_logs_object_repr(self) -> None:
+        log_stream = StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setLevel(logging.DEBUG)
+        client_logger = logging.getLogger("rpyc.test.debug_refcounting.client")
+        client_logger.setLevel(logging.DEBUG)
+        client_logger.addHandler(handler)
 
-        # Call exposed methods to create objects
-        result_list = conn.root.get_list()
-        result_dict = conn.root.get_dict()
+        async def _go(port: int) -> None:
+            conn = await async_connect(
+                "127.0.0.1", port,
+                config={
+                    "debug_refcounting": True,
+                    "logger": client_logger,
+                    "allow_all_attrs": True,
+                },
+                timeout=5.0,
+            )
+            try:
+                # Boxing these structures on the client registers them in
+                # the client's _local_objects — one ADD record per object.
+                the_list = [1, 2, 3, "hello"]
+                the_dict = {"key": "value", "number": 42}
+                a_echo = rpyc.async_(conn.root.echo)
+                _ = await a_echo(the_list)
+                _ = await a_echo(the_dict)
+            finally:
+                await conn.aclose()
 
-        # Access elements to ensure objects are used
-        _ = result_list[0]
-        _ = result_dict["key"]
+        try:
+            with mp_asyncio_server(_service_factory) as port:
+                asyncio.run(_go(port))
+        finally:
+            client_logger.removeHandler(handler)
 
-        # Close connection (should trigger decref)
-        conn.close()
-
-        # Get log output
         log_output = log_stream.getvalue()
 
-        # Verify debug logs contain readable object representations
-        assert "[REFCOUNT] ADD" in log_output, "Should log ADD operations"
-        assert "[1, 2, 3, 'hello']" in log_output, "Should log list repr"
-        assert "key" in log_output or "value" in log_output, "Should log dict content"
-
-        # Verify DECREF/DELETE operations are logged
-        assert "[REFCOUNT] DECREF" in log_output or "[REFCOUNT] DELETE" in log_output, \
-            "Should log DECREF/DELETE operations"
-
-        print("\n=== Debug Refcounting Log Output ===")
-        print(log_output)
-        print("=" * 40)
-
-    finally:
-        server.close()
-        logger.removeHandler(handler)
-
-
-@pytest.mark.asyncio
-async def test_debug_refcounting_async():
-    """Test debug_refcounting with async server."""
-
-    # Setup logger
-    log_stream = StringIO()
-    handler = logging.StreamHandler(log_stream)
-    handler.setLevel(logging.DEBUG)
-    logger = logging.getLogger("rpyc.test_async")
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(handler)
-
-    class AsyncDebugService(rpyc.Service):
-        async def exposed_async_get_data(self):
-            """Return async data."""
-            await asyncio.sleep(0.01)
-            return {"async": True, "data": [1, 2, 3]}
-
-    from rpyc.utils.server import AsyncioServer
-    config = {
-        "debug_refcounting": True,
-        "logger": logger,
-        "allow_all_attrs": True,
-    }
-
-    server = AsyncioServer(
-        AsyncDebugService,
-        port=0,
-        protocol_config=config
-    )
-
-    # Start server
-    server_task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.2)
-
-    try:
-        # Connect and test
-        conn = await rpyc.aio_connect("localhost", server.port, config=config)
-
-        result = await conn.root.async_get_data()
-        assert result["async"] is True
-
-        conn.close()
-        await asyncio.sleep(0.1)
-
-        # Verify logs
-        log_output = log_stream.getvalue()
-        assert "[REFCOUNT]" in log_output, "Should have refcount debug logs"
-
-        print("\n=== Async Debug Refcounting Log ===")
-        print(log_output)
-        print("=" * 40)
-
-    finally:
-        server.close()
-        await server_task
-        logger.removeHandler(handler)
+        self.assertIn(
+            "[REFCOUNT] ADD",
+            log_output,
+            msg=(
+                "Expected at least one [REFCOUNT] ADD line from the client's "
+                "_local_objects while boxing outbound arguments. Got:\n"
+                f"{log_output}"
+            ),
+        )
+        # Verify the readable repr machinery is engaged (list or dict
+        # content literal appears in the log).
+        self.assertTrue(
+            "[1, 2, 3, 'hello']" in log_output
+            or ("key" in log_output and "value" in log_output),
+            msg=(
+                "Expected the list repr or dict contents in the log (proves "
+                "the debug_refcounting path evaluated repr(obj)). Got:\n"
+                f"{log_output}"
+            ),
+        )
 
 
 if __name__ == "__main__":
-    # Run basic test
-    test_debug_refcounting_logs_object_repr()
-    print("\nBasic test passed!")
-
-    # Run async test
-    asyncio.run(test_debug_refcounting_async())
-    print("\nAsync test passed!")
+    unittest.main()

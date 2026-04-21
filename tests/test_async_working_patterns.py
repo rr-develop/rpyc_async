@@ -1,38 +1,46 @@
 """
-Working Async Patterns Test
+Working Async Patterns — end-to-end with real rpyc + AsyncioServer.
 
-Demonstrates all fully-supported async patterns that work perfectly:
+Demonstrates all fully-supported async patterns:
+
 1. Client → Server async calls
 2. Recursive async calls
 3. Concurrent async operations
-4. Mixed sync/async
-5. Task queue pattern (alternative to callbacks)
+4. Mixed sync/async (via ``rpyc.async_`` wrapper)
+5. Server-side immediate processing
+
+POLICY
+------
+NO SAME-PROCESS SERVER+CLIENT — see ``tests/support.py`` and
+``docs/DESIGN_NO_SAME_PROCESS_TESTS.md``. The server is started in a
+child process via ``mp_asyncio_server``.
 """
-import unittest
+from __future__ import annotations
+
 import asyncio
-import rpyc
-from rpyc.utils.server import ThreadedServer
-from threading import Thread
 import time
-import uuid
+import unittest
+
+import rpyc
+from tests.support import mp_asyncio_server
 
 
-class WorkingPatternsService(rpyc.Service):
-    """Service demonstrating all working async patterns."""
+# ─── Picklable service (spawn-safe) ─────────────────────────────────────────
 
-    def __init__(self):
-        super().__init__()
-        self.tasks = {}  # Task storage for task queue pattern
+class _WorkingPatternsService(rpyc.Service):
+    """Service demonstrating all working async patterns.
+
+    Must live at module scope so the ``multiprocessing.Process`` spawn
+    start method can pickle the class reference.
+    """
 
     # Pattern 1: Simple async method
-    async def exposed_async_hello(self, name):
-        """Simple async method."""
+    async def exposed_async_hello(self, name: str) -> str:
         await asyncio.sleep(0.01)
         return f"Hello, {name}!"
 
     # Pattern 2: Recursive async
-    async def exposed_async_countdown(self, n):
-        """Recursive async countdown."""
+    async def exposed_async_countdown(self, n: int) -> list[int]:
         await asyncio.sleep(0.001)
         if n <= 0:
             return [0]
@@ -40,173 +48,124 @@ class WorkingPatternsService(rpyc.Service):
         return [n] + rest
 
     # Pattern 3: I/O-bound async work
-    async def exposed_async_fetch_data(self, url_id):
-        """Simulate async I/O work."""
-        await asyncio.sleep(0.1)  # Simulate network delay
+    async def exposed_async_fetch_data(self, url_id: str) -> str:
+        await asyncio.sleep(0.1)  # simulated network delay
         return f"Data from {url_id}"
 
-    # Pattern 4: Immediate processing (simpler than task queue)
-    async def exposed_process_async(self, task_data):
-        """Process data asynchronously (immediate)."""
+    # Pattern 4: Async processing
+    async def exposed_process_async(self, task_data: str) -> str:
         await asyncio.sleep(0.1)
         return f"Processed: {task_data}"
 
     # Pattern 5: Mixed sync/async
-    def exposed_sync_method(self, x):
-        """Sync method for comparison."""
+    def exposed_sync_method(self, x: int) -> int:
         return x * 2
 
-    async def exposed_async_method(self, x):
-        """Async method."""
+    async def exposed_async_method(self, x: int) -> int:
         await asyncio.sleep(0.01)
         return x * 3
 
 
+def _service_factory() -> type[rpyc.Service]:
+    return _WorkingPatternsService
+
+
 class TestWorkingAsyncPatterns(unittest.TestCase):
-    """Test all fully-supported async patterns."""
+    """All supported async patterns, server in child process."""
 
-    @classmethod
-    def setUpClass(cls):
-        """Start server."""
-        from tests.support import get_free_port
-        cls.port = get_free_port()
-        cls.server = ThreadedServer(
-            WorkingPatternsService,
-            port=cls.port,
-            protocol_config={'allow_all_attrs': True}
-        )
-        cls.server_thread = Thread(target=cls.server.start, daemon=True)
-        cls.server_thread.start()
-        time.sleep(0.5)
+    def _run(self, coro_factory) -> None:
+        with mp_asyncio_server(_service_factory) as port:
+            asyncio.run(coro_factory(port))
 
-    @classmethod
-    def tearDownClass(cls):
-        """Stop server."""
-        cls.server.close()
-
-    def test_pattern_1_simple_async(self):
-        """✅ Pattern 1: Simple client → server async call."""
-        async def test():
-            conn = await rpyc.async_connect("localhost", self.port)
-
+    def test_pattern_1_simple_async(self) -> None:
+        async def _go(port: int) -> None:
+            conn = await rpyc.async_connect("localhost", port)
             try:
-                result = await conn.root.async_hello("World")
-                self.assertEqual(result, "Hello, World!")
-                print("✓ Pattern 1: Simple async call works perfectly")
+                self.assertEqual(
+                    await conn.root.async_hello("World"),
+                    "Hello, World!",
+                )
             finally:
                 await conn.aclose()
 
-        asyncio.run(test())
+        self._run(_go)
 
-    def test_pattern_2_recursive_async(self):
-        """✅ Pattern 2: Recursive async calls (depth 10)."""
-        async def test():
-            conn = await rpyc.async_connect("localhost", self.port)
-
+    def test_pattern_2_recursive_async(self) -> None:
+        async def _go(port: int) -> None:
+            conn = await rpyc.async_connect("localhost", port)
             try:
                 result = await conn.root.async_countdown(10)
-                expected = list(range(10, -1, -1))
-                self.assertEqual(list(result), expected)
-                print("✓ Pattern 2: Recursive async works perfectly (depth 10)")
+                self.assertEqual(list(result), list(range(10, -1, -1)))
             finally:
                 await conn.aclose()
 
-        asyncio.run(test())
+        self._run(_go)
 
-    def test_pattern_3_concurrent_async(self):
-        """✅ Pattern 3: Concurrent async operations."""
-        async def test():
-            conn = await rpyc.async_connect("localhost", self.port)
-
+    def test_pattern_3_concurrent_async(self) -> None:
+        async def _go(port: int) -> None:
+            conn = await rpyc.async_connect("localhost", port)
             try:
-                # Launch 10 concurrent async calls
                 tasks = [
                     conn.root.async_fetch_data(f"url{i}")
                     for i in range(10)
                 ]
-
-                # Await all concurrently
                 start = time.time()
                 results = await asyncio.gather(*tasks)
                 duration = time.time() - start
-
-                # All should complete
                 self.assertEqual(len(results), 10)
-
-                # Should take ~0.1s (concurrent), not ~1s (sequential)
+                # Concurrent execution must be much faster than the
+                # sequential 10 × 0.1s = 1s upper bound.
                 self.assertLess(duration, 0.3)
-
-                print(f"✓ Pattern 3: 10 concurrent calls in {duration:.2f}s (should be ~0.1s)")
             finally:
                 await conn.aclose()
 
-        asyncio.run(test())
+        self._run(_go)
 
-    def test_pattern_4_async_processing(self):
-        """✅ Pattern 4: Async processing with await."""
-        async def test():
-            conn = await rpyc.async_connect("localhost", self.port)
-
+    def test_pattern_4_async_processing(self) -> None:
+        async def _go(port: int) -> None:
+            conn = await rpyc.async_connect("localhost", port)
             try:
-                # Call async processing method
-                result = await conn.root.process_async("test_data")
-
-                self.assertEqual(result, "Processed: test_data")
-                print("✓ Pattern 4: Async processing works perfectly")
+                self.assertEqual(
+                    await conn.root.process_async("test_data"),
+                    "Processed: test_data",
+                )
             finally:
                 await conn.aclose()
 
-        asyncio.run(test())
+        self._run(_go)
 
-    def test_pattern_5_mixed_sync_async(self):
-        """✅ Pattern 5: Mixed sync and async methods."""
-        async def test():
-            conn = await rpyc.async_connect("localhost", self.port)
-
+    def test_pattern_5_mixed_sync_async(self) -> None:
+        async def _go(port: int) -> None:
+            conn = await rpyc.async_connect("localhost", port)
             try:
-                # Sync remote method: call via async wrapper to stay event-driven.
-                sync_result = await rpyc.async_(conn.root.sync_method)(5)
-                self.assertEqual(sync_result, 10)
-
-                # Native async method
-                async_result = await conn.root.async_method(5)
-                self.assertEqual(async_result, 15)
-
-                print("✓ Pattern 5: Mixed sync/async works perfectly")
+                # Sync remote method: go through rpyc.async_ wrapper to
+                # avoid the sync_request guard.
+                self.assertEqual(
+                    await rpyc.async_(conn.root.sync_method)(5),
+                    10,
+                )
+                # Native async method — just await.
+                self.assertEqual(await conn.root.async_method(5), 15)
             finally:
                 await conn.aclose()
 
-        asyncio.run(test())
+        self._run(_go)
 
-    def test_concurrent_client_calls(self):
-        """
-        Test concurrent calls from client perspective.
-
-        Note: With ThreadedServer and asyncio.run() fallback,
-        server processes each request sequentially in its thread.
-        However, client can launch multiple calls concurrently.
-        """
-        async def test():
-            conn = await rpyc.async_connect("localhost", self.port)
-
+    def test_concurrent_client_calls(self) -> None:
+        async def _go(port: int) -> None:
+            conn = await rpyc.async_connect("localhost", port)
             try:
-                # Launch multiple concurrent calls from client
-                tasks = [conn.root.async_fetch_data(f"url{i}") for i in range(5)]
+                tasks = [
+                    conn.root.async_fetch_data(f"url{i}")
+                    for i in range(5)
+                ]
                 results = await asyncio.gather(*tasks)
-
-                # All calls should complete
                 self.assertEqual(len(results), 5)
-
-                print("✓ Client can launch concurrent async calls")
             finally:
                 await conn.aclose()
 
-        asyncio.run(test())
+        self._run(_go)
 
 
-if __name__ == '__main__':
-    print("\n" + "="*70)
-    print("Testing RPyC Async/Await - All Fully Supported Patterns")
-    print("="*70 + "\n")
-
+if __name__ == "__main__":
     unittest.main(verbosity=2)
