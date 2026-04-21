@@ -98,9 +98,41 @@ def connect(host, port, service=VoidService, config={}, ipv6=False, keepalive=Fa
     :param keepalive: whether to set TCP keepalive on the socket (defaults to ``False``)
 
     :returns: an RPyC connection
+
+    .. warning::
+        This call is **synchronous** and uses blocking ``socket.connect()``
+        plus a blocking-``select`` serving loop internally. If an asyncio
+        event loop is running in the current thread, this function raises
+        ``RuntimeError`` — calling it would stall that loop for the entire
+        TCP handshake and for every subsequent ``sync_request``. Use
+        ``await rpyc.async_connect(host, port, ...)`` instead. See
+        ``docs/DESIGN_ASYNC_CONNECT_POLICY.md``.
     """
+    _reject_if_running_loop("rpyc.connect")
     s = SocketStream.connect(host, port, ipv6=ipv6, keepalive=keepalive)
     return connect_stream(s, service, config)
+
+
+def _reject_if_running_loop(api_name):
+    """Raise RuntimeError if called from an asyncio event loop.
+
+    Sync ``rpyc.connect`` (and siblings) block the current thread on
+    ``socket.connect`` and on later ``sync_request`` calls. Doing that
+    inside a running event loop stalls every task on that loop. Instead
+    of silently blocking, we refuse and name the async alternative.
+    """
+    import asyncio as _asyncio
+    try:
+        _asyncio.get_running_loop()
+    except RuntimeError:
+        return  # No running loop — sync callers are fine.
+    raise RuntimeError(
+        f"{api_name}() is synchronous and would block the running asyncio "
+        "event loop on its TCP handshake and on every subsequent "
+        "sync_request. Use `await rpyc.async_connect(host, port, ...)` "
+        "instead (NO-POLLING, event-driven). "
+        "See docs/DESIGN_ASYNC_CONNECT_POLICY.md."
+    )
 
 
 def unix_connect(path, service=VoidService, config={}):
@@ -112,7 +144,12 @@ def unix_connect(path, service=VoidService, config={}):
     :param config: configuration dict
 
     :returns: an RPyC connection
+
+    .. warning::
+        Synchronous; refuses to run inside an asyncio event loop. Use
+        ``await rpyc.async_connect(...)`` from async code.
     """
+    _reject_if_running_loop("rpyc.unix_connect")
     s = SocketStream.unix_connect(path)
     return connect_stream(s, service, config)
 
@@ -165,6 +202,7 @@ def ssl_connect(host, port, keyfile=None, certfile=None, ca_certs=None,
         ssl_kwargs["ssl_version"] = ssl_version
     if ciphers is not None:
         ssl_kwargs["ciphers"] = ciphers
+    _reject_if_running_loop("rpyc.ssl_connect")
     s = SocketStream.ssl_connect(host, port, ssl_kwargs, ipv6=ipv6, keepalive=keepalive)
     return connect_stream(s, service, config)
 

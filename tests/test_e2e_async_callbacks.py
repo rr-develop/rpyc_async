@@ -137,49 +137,34 @@ class TestE2EAsyncCallbacks(unittest.TestCase):
     def test_async_callback_basic(self):
         """Test basic async callback from server to client across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
-
-            # Enable asyncio serving on client to handle callbacks
-            loop = asyncio.get_running_loop()
-            conn.enable_asyncio_serving(loop=loop)
-
+            conn = await rpyc.async_connect("localhost", self.port)
             try:
-                # Define client-side async callback
                 async def my_callback(value):
-                    """Client async callback - runs in CLIENT process."""
                     await asyncio.sleep(0.01)
                     return f"Client got: {value}"
 
-                # Call server method with async callback
                 result = await conn.root.process_with_callback(my_callback, 5)
-
                 self.assertEqual(result, "Server processed: Client got: 10")
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_callback_exception(self):
         """Test exception in async callback across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
-            loop = asyncio.get_running_loop()
-            conn.enable_asyncio_serving(loop=loop)
-
+            conn = await rpyc.async_connect("localhost", self.port)
             try:
                 async def failing_callback(value):
                     await asyncio.sleep(0.01)
                     raise ValueError(f"Callback error: {value}")
 
-                # Server calls callback, callback raises exception
                 with self.assertRaises(ValueError) as ctx:
                     await conn.root.process_with_callback(failing_callback, 7)
 
                 self.assertIn("Callback error: 14", str(ctx.exception))
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 

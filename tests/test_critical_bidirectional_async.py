@@ -187,20 +187,16 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
         """Test simple async call works (baseline) across processes."""
         async def test():
             # Connect to server
-            server_conn = rpyc.connect("localhost", self.server_port)
+            server_conn = await rpyc.async_connect("localhost", self.server_port)
 
             try:
-                # Enable asyncio serving on client side
-                loop = asyncio.get_running_loop()
-                server_conn.enable_asyncio_serving(loop=loop)
 
                 # Simple async call
                 result = await server_conn.root.simple_async(5)
                 self.assertEqual(result, 10)
                 print(f"✓ Simple async call works: {result}")
             finally:
-                server_conn.disable_asyncio_serving()
-                server_conn.close()
+                await server_conn.aclose()
 
         asyncio.run(test())
 
@@ -217,14 +213,10 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             print("="*60)
 
             # Connect to server
-            server_conn = rpyc.connect("localhost", self.server_port)
+            server_conn = await rpyc.async_connect("localhost", self.server_port)
 
             try:
-                # Enable asyncio serving on server connection
-                # This is CRITICAL for bidirectional async
-                loop = asyncio.get_running_loop()
-                server_conn.enable_asyncio_serving(loop=loop)
-                print("✓ Server connection: asyncio serving enabled")
+                print("✓ Server connection established (async_connect, asyncio serving on)")
 
                 # Define async callback that will run in CLIENT process
                 # This callback CALLS BACK to server (recursion!)
@@ -273,8 +265,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
                 print("✓ CRITICAL TEST PASSED!")
 
             finally:
-                server_conn.disable_asyncio_serving()
-                server_conn.close()
+                await server_conn.aclose()
 
         asyncio.run(test())
 
@@ -285,12 +276,9 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             print("CRITICAL TEST: Bidirectional async with recursion (depth=5)")
             print("="*60)
 
-            server_conn = rpyc.connect("localhost", self.server_port)
+            server_conn = await rpyc.async_connect("localhost", self.server_port)
 
             try:
-                loop = asyncio.get_running_loop()
-                server_conn.enable_asyncio_serving(loop=loop)
-
                 async def async_callback(value, depth):
                     """Client async callback."""
                     print(f"[CLIENT] async_callback(value={value}, depth={depth})")
@@ -321,8 +309,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
                 print("✓ Deep recursion test PASSED!")
 
             finally:
-                server_conn.disable_asyncio_serving()
-                server_conn.close()
+                await server_conn.aclose()
 
         asyncio.run(test())
 
@@ -338,15 +325,12 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
             initial_thread_count = threading.active_count()
             print(f"\n[TEST] Initial thread count: {initial_thread_count}")
 
-            server_conn = rpyc.connect("localhost", self.server_port)
+            server_conn = await rpyc.async_connect("localhost", self.server_port)
 
             try:
-                loop = asyncio.get_running_loop()
-                server_conn.enable_asyncio_serving(loop=loop)
-
-                # Check thread count after enabling asyncio
+                # Check thread count after connecting via async_connect
                 after_enable_count = threading.active_count()
-                print(f"[TEST] After enable_asyncio_serving: {after_enable_count}")
+                print(f"[TEST] After async_connect: {after_enable_count}")
 
                 # Should not create new threads (might be ±1 due to thread pool)
                 self.assertLessEqual(
@@ -390,8 +374,7 @@ class TestCriticalBidirectionalAsync(unittest.TestCase):
                 print("✓ No excessive thread creation detected")
 
             finally:
-                server_conn.disable_asyncio_serving()
-                server_conn.close()
+                await server_conn.aclose()
 
         asyncio.run(test())
 

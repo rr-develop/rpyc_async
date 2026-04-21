@@ -77,17 +77,21 @@ class TestBackgroundCleanupTask(unittest.TestCase):
 
         asyncio.run(test())
 
-    def test_cleanup_task_runs_periodically(self):
-        """Cleanup task should run at configured interval"""
-        async def test():
-            # Set short interval for testing
-            self.conn._cleanup_interval = 0.1
+    def test_cleanup_task_wakes_on_each_deletion_signal(self):
+        """Cleanup task must run on each _enqueue_deletion signal (event-driven).
 
+        Replaces an earlier test that asserted the task wakes on a
+        ``_cleanup_interval`` TIMER. That old behavior was a polling loop
+        (~10 wakeups/sec per connection) and has been removed — see the
+        NO POLLING POLICY banner in protocol.py. The task now sleeps on
+        an asyncio.Event set by ``_enqueue_deletion``. No wake-ups while
+        idle. One wake-up per signal.
+        """
+        async def test():
             loop = asyncio.get_running_loop()
             self.conn._asyncio_loop = loop
             self.conn._asyncio_enabled = True
 
-            # Mock _process_pending_deletions
             call_count = []
 
             async def mock_process():
@@ -95,19 +99,78 @@ class TestBackgroundCleanupTask(unittest.TestCase):
 
             self.conn._process_pending_deletions = mock_process
 
-            # Start task
+            # Start task — should be IDLE (no wake-ups yet).
             self.conn._start_cleanup_task()
+            await asyncio.sleep(0.05)
+            idle_calls = len(call_count)
 
-            # Wait for multiple intervals
-            await asyncio.sleep(0.35)
+            # Signal 3 deletions. Each should wake the loop at least once.
+            # (Multiple signals before the task runs may coalesce into one
+            # wake-up — that is correct behavior, not a regression.)
+            self.conn._enqueue_deletion(("x", 1, 1), 1)
+            await asyncio.sleep(0.02)
+            self.conn._enqueue_deletion(("x", 1, 2), 1)
+            await asyncio.sleep(0.02)
+            self.conn._enqueue_deletion(("x", 1, 3), 1)
+            await asyncio.sleep(0.05)
 
             # Stop task
             self.conn._stop_cleanup_task()
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
-            # Should have been called multiple times (at least 2-3)
-            self.assertGreater(len(call_count), 1,
-                             f"Should be called multiple times, got {len(call_count)}")
+            # Must have woken on the signals (> idle), and NOT woken on a
+            # timer while idle.
+            self.assertEqual(
+                idle_calls, 0,
+                "Cleanup task woke without any deletion signal — this is the "
+                "forbidden timer-polling behavior.",
+            )
+            self.assertGreater(
+                len(call_count), 0,
+                "Cleanup task did not wake when _enqueue_deletion was called.",
+            )
+
+        asyncio.run(test())
+
+    def test_cleanup_task_is_idle_when_no_deletions(self):
+        """Zero deletions → zero wake-ups while running.
+
+        This is the whole point of the refactor. The old polling loop ran
+        every ``_cleanup_interval`` seconds unconditionally. Event-driven:
+        no signal, no wake.
+
+        (The task does run ``_process_pending_deletions`` once in its
+        ``finally`` block as a final drain on shutdown — that is not
+        polling, and we measure the count BEFORE stopping.)
+        """
+        async def test():
+            loop = asyncio.get_running_loop()
+            self.conn._asyncio_loop = loop
+            self.conn._asyncio_enabled = True
+
+            call_count = []
+
+            async def mock_process():
+                call_count.append(1)
+
+            self.conn._process_pending_deletions = mock_process
+
+            self.conn._start_cleanup_task()
+            # Wait long enough that a 100-ms polling loop would have fired
+            # many times.
+            await asyncio.sleep(0.4)
+            # Snapshot calls made while the task was running — the final
+            # drain on stop is allowed (that's not polling, that's cleanup).
+            idle_calls = len(call_count)
+
+            self.conn._stop_cleanup_task()
+            await asyncio.sleep(0.05)
+
+            self.assertEqual(
+                idle_calls, 0,
+                f"Cleanup task fired {idle_calls} time(s) with no deletions "
+                f"queued while running. Must be event-driven — forbidden polling.",
+            )
 
         asyncio.run(test())
 
@@ -135,10 +198,16 @@ class TestBackgroundCleanupTask(unittest.TestCase):
         asyncio.run(test())
 
     def test_cleanup_task_handles_errors_gracefully(self):
-        """Cleanup task should continue running even if _process_pending_deletions raises"""
-        async def test():
-            self.conn._cleanup_interval = 0.05
+        """Cleanup task must keep running after _process_pending_deletions raises.
 
+        Updated for event-driven model (v5.3 — no polling):
+        Previously this test waited for a 1-second timer-backoff between calls.
+        The task no longer uses a backoff timer (that was polling). Instead it
+        re-arms by awaiting the next ``_enqueue_deletion`` signal. We assert
+        the task is still healthy by sending a SECOND signal after the error
+        and observing it gets processed.
+        """
+        async def test():
             loop = asyncio.get_running_loop()
             self.conn._asyncio_loop = loop
             self.conn._asyncio_enabled = True
@@ -156,17 +225,25 @@ class TestBackgroundCleanupTask(unittest.TestCase):
             # Start task
             self.conn._start_cleanup_task()
 
-            # Wait long enough for error backoff (1.0s) plus one more normal cycle
-            # First call -> error -> sleep 1.0s -> second call
-            await asyncio.sleep(1.2)
+            # First signal → triggers error in process
+            self.conn._enqueue_deletion(("x", 1, 1), 1)
+            await asyncio.sleep(0.05)
+
+            # Second signal → task must still be alive and process it
+            self.conn._enqueue_deletion(("x", 1, 2), 1)
+            await asyncio.sleep(0.05)
 
             # Stop task
             self.conn._stop_cleanup_task()
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
-            # Should have been called multiple times despite error
-            self.assertGreater(len(call_count), 1,
-                             "Should continue after error")
+            # Should have been called at least twice despite the error
+            self.assertGreaterEqual(
+                len(call_count), 2,
+                f"Task died after error; only {len(call_count)} call(s). "
+                f"The cleanup loop must re-arm on the next _enqueue_deletion "
+                f"signal instead of a timer backoff.",
+            )
 
         asyncio.run(test())
 

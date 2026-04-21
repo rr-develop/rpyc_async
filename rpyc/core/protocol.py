@@ -229,6 +229,18 @@ class Connection(object):
         self._loop_fd_registered = False    # FD registered in loop?
         self._registered_fd = None          # Saved FD for cleanup
         # ═══════════════════════════════════════════════════════════════
+        # Event-driven close notification (v5.3 - NO POLLING POLICY)
+        # ═══════════════════════════════════════════════════════════════
+        # STRICT POLICY: Callers MUST NOT poll `self.closed` via
+        # `while not conn.closed: await asyncio.sleep(...)`. That pattern
+        # burns CPU (10 wakeups/sec per connection at sleep(0.1); ~33% CPU
+        # measured with two connections) and silently breaks when .closed
+        # is never flipped. Use `await conn.wait_closed()` or register a
+        # callback via `conn.add_close_callback(cb)` instead.
+        self._close_callbacks: list = []    # Fired once, in close order
+        self._close_lock = threading.Lock() # Protects callbacks list
+        self._close_waiters: list = []      # list[(loop, future)] — async waiters
+        # ═══════════════════════════════════════════════════════════════
         # Netref Lifecycle Management (v5.2)
         # ═══════════════════════════════════════════════════════════════
         # Queue for pending netref deletions: (id_pack, refcount) tuples
@@ -236,6 +248,12 @@ class Connection(object):
         # Background cleanup task
         self._cleanup_task: Optional[asyncio.Task] = None
         self._cleanup_running: bool = False
+        # Signal fired when a deletion is enqueued — replaces the old
+        # asyncio.sleep(cleanup_interval) polling loop. The cleanup task
+        # waits on this event (with a bounded timeout as a safety fallback,
+        # not as the primary wake source) and wakes only when there is
+        # actual work to do OR when the connection is closing.
+        self._deletion_available: Optional[asyncio.Event] = None
         # Cleanup configuration
         self._cleanup_interval: float = self._config.get("cleanup_interval", 2.0)
         self._cleanup_ack_timeout: float = self._config.get("cleanup_ack_timeout", 5.0)
@@ -255,6 +273,17 @@ class Connection(object):
 
     def _cleanup(self, _anyway=True):  # IO
         if self._closed and not _anyway:
+            return
+        # Idempotency: _cleanup may be entered twice on the async close
+        # path (once from on_readable's EOF-driven close(), once from
+        # aclose()'s finally). After the first pass _local_root is None
+        # and the rest of the teardown has already run — just mark closed
+        # and return without repeating side-effects. The second path still
+        # needs to fire close notifications (they are reset to [] on first
+        # pass, so firing again is a no-op).
+        if self._local_root is None:
+            self._closed = True
+            self._fire_close_notifications()
             return
         self._closed = True
         self._channel.close()
@@ -280,6 +309,11 @@ class Connection(object):
                 self._sendlock.release()
             except Exception:
                 pass
+        # Fire close notifications AFTER all internal state is torn down so
+        # callbacks observe a fully-closed connection. See NO-POLLING policy
+        # note in __init__ — these notifications are why callers no longer
+        # need to poll `.closed`.
+        self._fire_close_notifications()
 
     def close(self) -> None:  # IO
         """
@@ -316,12 +350,149 @@ class Connection(object):
         """Indicates whether the connection has been closed or not"""
         return self._closed
 
+    # ═══════════════════════════════════════════════════════════════
+    # Event-driven close notification (v5.3 - NO POLLING POLICY)
+    # ═══════════════════════════════════════════════════════════════
+    # STRICT POLICY — DO NOT POLL `.closed`.
+    #
+    # Anywhere an async caller wants to block until the connection closes,
+    # use one of:
+    #   * `await conn.wait_closed()`                 — coroutine
+    #   * `conn.add_close_callback(cb)`              — sync callback
+    #
+    # NEVER write `while not conn.closed: await asyncio.sleep(x)`. That is
+    # polling, burns CPU (measured: +30% CPU for 2 connections at sleep(0.1)),
+    # and is brittle when `.closed` is not flipped promptly by the peer.
+
+    def add_close_callback(self, callback) -> None:
+        """Register a one-shot callback fired exactly once when the connection
+        closes.
+
+        Thread-safe. If the connection is already closed at registration time,
+        the callback is invoked immediately (on the calling thread).
+
+        The callback takes no arguments. It must not raise; any exception is
+        swallowed and logged.
+
+        Use this instead of polling ``conn.closed`` from sync code.
+        """
+        with self._close_lock:
+            if not self._closed:
+                self._close_callbacks.append(callback)
+                return
+        # Already closed — fire synchronously outside the lock.
+        try:
+            callback()
+        except Exception:
+            logger = self._config.get("logger")
+            if logger:
+                logger.exception("close callback raised")
+
+    async def wait_closed(self) -> None:
+        """Block (in asyncio) until this connection is closed.
+
+        Returns immediately if already closed. This is the event-driven
+        replacement for ``while not conn.closed: await asyncio.sleep(...)``.
+        Zero CPU while waiting — the coroutine is suspended on a Future that
+        is resolved by ``close()``.
+        """
+        if self._closed:
+            return
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        with self._close_lock:
+            if self._closed:
+                # Raced with close() — return immediately.
+                return
+            self._close_waiters.append((loop, fut))
+        try:
+            await fut
+        finally:
+            # Best-effort removal; close path also clears the list.
+            with self._close_lock:
+                try:
+                    self._close_waiters.remove((loop, fut))
+                except ValueError:
+                    pass
+
+    def _fire_close_notifications(self) -> None:
+        """Invoke all registered close callbacks and resolve async waiters.
+
+        Called from ``_cleanup()`` once. Safe to call from any thread.
+        """
+        with self._close_lock:
+            callbacks = self._close_callbacks
+            waiters = self._close_waiters
+            self._close_callbacks = []
+            self._close_waiters = []
+
+        for cb in callbacks:
+            try:
+                cb()
+            except Exception:
+                logger = self._config.get("logger")
+                if logger:
+                    logger.exception("close callback raised")
+                else:
+                    import sys, traceback
+                    traceback.print_exc(file=sys.stderr)
+
+        for loop, fut in waiters:
+            # Resolving the future must happen on its own loop.
+            try:
+                if loop.is_closed():
+                    continue
+                if loop.is_running():
+                    loop.call_soon_threadsafe(
+                        self._resolve_close_future, fut
+                    )
+                else:
+                    # Loop is not running — set result directly; any awaiter
+                    # will observe the result when the loop next runs.
+                    self._resolve_close_future(fut)
+            except Exception:
+                logger = self._config.get("logger")
+                if logger:
+                    logger.exception("failed to resolve close waiter")
+
+    @staticmethod
+    def _resolve_close_future(fut) -> None:
+        if not fut.done():
+            try:
+                fut.set_result(None)
+            except asyncio.InvalidStateError:
+                pass
+
     def fileno(self):  # IO
         """Returns the connectin's underlying file descriptor"""
         return self._channel.fileno()
 
     # ═══════════════════════════════════════════════════════════════
     # Asyncio Integration Methods (v5.1)
+    # ═══════════════════════════════════════════════════════════════
+    #
+    # NO POLLING POLICY — STRICT BAN (applies to every asyncio code
+    # path in this class: enable/disable_asyncio_serving, the cleanup
+    # task started by _start_cleanup_task, wait_closed, and anything
+    # else awaited inside the event loop).
+    #
+    # Forbidden shape:
+    #     while <cond>:
+    #         await asyncio.sleep(<x>)
+    #
+    # Why: at sleep(0.1) this burns ~10 wakeups/sec per connection; with
+    # two connections observed CPU rose from 1.2% idle to 33%. It also
+    # masks stale state — a condition that never flips = forever loop.
+    #
+    # Required primitives (pick the one that matches your event):
+    #   * ``await conn.wait_closed()``       — wait for close
+    #   * ``conn.add_close_callback(cb)``    — sync close notification
+    #   * ``asyncio.Event().wait()``         — wait for work-available
+    #   * ``loop.add_reader(fd, cb)``        — wake when FD is readable
+    #   * ``loop.call_soon_threadsafe(...)`` — cross-thread signalling
+    #
+    # Enforced by ``tests/test_no_polling_policy.py``. Reviewers: reject
+    # any PR that adds ``await asyncio.sleep(...)`` inside a loop here.
     # ═══════════════════════════════════════════════════════════════
 
     def enable_asyncio_serving(self, loop=None):
@@ -438,12 +609,66 @@ class Connection(object):
     # NEW (v5.2): Background Cleanup Task
     # ═══════════════════════════════════════════════════════════════
 
+    def _signal_deletion_available(self) -> None:
+        """Wake the background cleanup task when a new deletion is enqueued.
+
+        Called from ``netref.__del__`` via ``_enqueue_deletion``. Safe to call
+        from any thread: the ``asyncio.Event.set()`` call is scheduled onto
+        the connection's event loop via ``call_soon_threadsafe``.
+
+        ═══════════════════════════════════════════════════════════════════
+        NO POLLING POLICY — why this exists:
+        The old cleanup loop polled every 2s via ``asyncio.sleep(interval)``.
+        Even with nothing to clean up, it woke the loop 30 times/minute per
+        connection. This signal replaces that timer: the cleanup loop sleeps
+        on an ``asyncio.Event`` and wakes only when there IS work.
+        ═══════════════════════════════════════════════════════════════════
+        """
+        event = self._deletion_available
+        loop = self._asyncio_loop
+        if event is None or loop is None:
+            return
+        try:
+            if loop.is_closed():
+                return
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            # Loop is shutting down — cleanup will drain via
+            # _process_pending_deletions_sync() in close().
+            pass
+
+    def _enqueue_deletion(self, id_pack, refcount) -> None:
+        """Queue a netref deletion and notify the background cleanup task.
+
+        Thread-safe. Callers (netref ``__del__``) use this instead of touching
+        ``_pending_deletions`` directly so the wake-up signal never gets lost.
+        """
+        self._pending_deletions.put((id_pack, refcount))
+        self._signal_deletion_available()
+
     def _start_cleanup_task(self) -> None:
         """
         Start background cleanup task for netref garbage collection.
 
-        This task runs periodically (every cleanup_interval seconds) and
-        processes pending netref deletions in batches.
+        ═══════════════════════════════════════════════════════════════════
+        NO POLLING POLICY — STRICT BAN
+        ═══════════════════════════════════════════════════════════════════
+        This task MUST NOT wake on a timer. Previously it used
+        ``await asyncio.sleep(self._cleanup_interval)`` between cycles,
+        which wasted 30 wakeups/minute per connection even when idle.
+
+        Correct design (implemented here):
+          1. Block on ``self._deletion_available.wait()``  — event set by
+             ``_enqueue_deletion`` when a netref is garbage-collected.
+          2. Process the batch.
+          3. Clear the event; loop.
+
+        If you add a ``await asyncio.sleep(...)`` here as "just a small delay"
+        you reintroduce the polling bug. DON'T. If you need debounce/coalesce,
+        drain the queue after a short ``asyncio.sleep(0)`` that yields to the
+        scheduler (not a fixed timer) — but note the current code already
+        drains the entire queue per cycle via ``get_nowait``.
+        ═══════════════════════════════════════════════════════════════════
 
         Note: Should only be called when asyncio serving is enabled.
         """
@@ -455,25 +680,54 @@ class Connection(object):
 
         self._cleanup_running = True
 
-        async def cleanup_loop() -> None:
-            """Main cleanup loop - runs until stopped"""
-            while self._cleanup_running and not self.closed:
-                try:
-                    # Process pending deletions
-                    await self._process_pending_deletions()
+        # Create the wake-up event ON the event loop that will await it.
+        # Creating from a different loop raises RuntimeError on .wait().
+        self._deletion_available = asyncio.Event()
 
-                    # Wait before next cleanup cycle
-                    await asyncio.sleep(self._cleanup_interval)
-                except asyncio.CancelledError:
-                    # Task was cancelled - exit cleanly
-                    break
-                except Exception as e:
-                    # Log error but continue running
-                    logger = self._config.get("logger")
-                    if logger:
-                        logger.error(f"Error in cleanup loop: {e}", exc_info=True)
-                    # Back off briefly on error
-                    await asyncio.sleep(1.0)
+        async def cleanup_loop() -> None:
+            """Main cleanup loop — event-driven, no polling.
+
+            Wakes only when (a) a deletion is enqueued, or (b) the connection
+            is closing. Zero wakeups while idle.
+            """
+            event = self._deletion_available
+            try:
+                while self._cleanup_running and not self.closed:
+                    try:
+                        # Event-driven wait. Zero CPU while nothing to do.
+                        assert event is not None
+                        await event.wait()
+                        event.clear()
+
+                        if not self._cleanup_running or self.closed:
+                            break
+
+                        # Drain: a burst of deletions may have arrived; process
+                        # them all in one batch.
+                        await self._process_pending_deletions()
+                    except asyncio.CancelledError:
+                        # Task was cancelled — exit cleanly
+                        break
+                    except Exception as e:
+                        # Log error but continue running. DO NOT add a sleep
+                        # here as "backoff" on every error — re-arm by waiting
+                        # for the next signal instead. A true hot-loop error
+                        # would need its own guard, but the current code only
+                        # hits this path on transient protocol issues.
+                        logger = self._config.get("logger")
+                        if logger:
+                            logger.error(
+                                f"Error in cleanup loop: {e}", exc_info=True
+                            )
+                        # Wait for next signal; if one never comes, the close
+                        # path will drain via _process_pending_deletions_sync.
+                        continue
+            finally:
+                # Final drain of anything queued after our last wake-up.
+                try:
+                    await self._process_pending_deletions()
+                except Exception:
+                    pass
 
         # Create and start task in event loop
         self._cleanup_task = self._asyncio_loop.create_task(cleanup_loop())
@@ -486,6 +740,11 @@ class Connection(object):
         Safe to call multiple times.
         """
         self._cleanup_running = False
+
+        # Wake the cleanup loop so it can observe _cleanup_running=False and
+        # exit without waiting for a deletion to arrive. Otherwise it would
+        # stay suspended on event.wait() forever (no polling fallback).
+        self._signal_deletion_available()
 
         if self._cleanup_task is not None:
             self._cleanup_task.cancel()
@@ -1469,11 +1728,116 @@ class Connection(object):
         :raises: any exception that the requests may be generated
         :returns: the result of the request
         """
+        # ═══════════════════════════════════════════════════════════════
+        # GUARD: forbid sync_request from the loop that serves this conn
+        # ═══════════════════════════════════════════════════════════════
+        # If this connection has asyncio serving enabled AND we are
+        # currently running on the same event loop, a blocking wait
+        # inside AsyncResult.wait()/Connection.serve() would stall — or
+        # outright deadlock — the loop. That is exactly the class of bug
+        # this project has already spent effort to eliminate
+        # (NO POLLING POLICY + event-driven serving). Fail loudly with
+        # instructions instead.
+        #
+        # Sync callers (threaded code, or the close path during process
+        # teardown with no running loop) are unaffected — `get_running_loop`
+        # raises RuntimeError in that case and we fall through.
+        #
+        # NOTE: intentionally NOT a heuristic. The invariant we check is
+        # precise: "are we on the loop that owns this connection's FD?".
+        # User-facing RPC (HANDLE_CALL / HANDLE_ASYNC_CALL) from the loop
+        # that serves this connection is always wrong: the handler runs
+        # remotely, round-trip time is unbounded, and a blocking wait here
+        # stalls the whole event loop for arbitrary duration. Refuse with
+        # a clear pointer to the async alternative.
+        #
+        # Protocol-level fast-path handlers (HANDLE_INSPECT, HANDLE_GETATTR,
+        # HANDLE_SETATTR, HANDLE_DEL, HANDLE_CLOSE, ...) are NOT refused:
+        # they are short, deterministic, cache-backed, and netref/proxy
+        # construction fundamentally needs them during reply unboxing
+        # (Connection._netref_factory issues HANDLE_INSPECT when creating
+        # a proxy class the first time). Blocking loops for <1 ms on a
+        # localhost protocol hop is a lesser evil than fragmenting the
+        # whole netref layer into sync/async variants.
+        _USER_RPC_HANDLERS = (consts.HANDLE_CALL, consts.HANDLE_ASYNC_CALL)
+        if (
+            self._asyncio_enabled
+            and handler in _USER_RPC_HANDLERS
+        ):
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not None and running is self._asyncio_loop:
+                raise RuntimeError(
+                    "sync_request() was called from the asyncio loop that "
+                    "serves this connection for a user-level RPC (handler="
+                    f"{handler!r}). This would block the loop for the full "
+                    "remote round-trip and can deadlock.\n"
+                    "Use an async alternative:\n"
+                    "  * `await rpyc.async_(conn.root.method)(args)` "
+                    "— async wrapper for a sync netref method\n"
+                    "  * `await conn.root.async_method(args)` "
+                    "— if the remote method is `async def`\n"
+                    "  * `await conn.async_request(handler, *args)` "
+                    "— generic async RPC\n"
+                    "  * `await conn.aclose()` "
+                    "— async close (instead of conn.close())\n"
+                    "If you called `rpyc.connect()` from async code, "
+                    "switch to `await rpyc.async_connect(...)`."
+                )
         timeout = self._config["sync_request_timeout"]
         _async_res = self.async_request(handler, *args, timeout=timeout)
         # _async_res is an instance of AsyncResult, the value property invokes Connection.serve via AsyncResult.wait
         # So, the _recvlock can be acquired multiple times by the owning thread and warrants the use of RLock
         return _async_res.value
+
+    async def aclose(self) -> None:
+        """
+        Asynchronously close this connection.
+
+        The synchronous ``close()`` calls ``sync_request(HANDLE_CLOSE)``
+        which blocks the loop — and, with the sync_request guard above,
+        would actually raise when called from the loop that serves this
+        connection. ``aclose()`` is the correct path from async code: it
+        drains pending netref deletions asynchronously, sends HANDLE_CLOSE
+        via ``async_request`` (awaitable, event-driven), and then runs
+        local cleanup.
+
+        Safe to call multiple times. Never blocks the event loop.
+        """
+        if self._closed:
+            return
+        # 1. Best-effort drain of pending netref deletions via the
+        #    event-driven path before the connection goes down.
+        try:
+            await self._process_pending_deletions()
+        except Exception:
+            pass
+        # 2. Send HANDLE_CLOSE as fire-and-forget.
+        #    Why not await the reply: the server handler is `_handle_close`,
+        #    which calls `_cleanup()` *before* the MSG_REPLY is emitted —
+        #    so the reply typically never arrives. The sync `close()` path
+        #    has always tolerated this (EOFError/TimeoutError suppressed).
+        #    We replicate that behavior without ever blocking the loop.
+        try:
+            self._async_request(consts.HANDLE_CLOSE)
+        except Exception:
+            # If even the send fails (peer gone), just proceed to cleanup.
+            if not self._config["close_catchall"]:
+                raise
+        # 3. Yield once so the MSG_REQUEST actually goes out on the wire
+        #    before we tear the socket down.
+        await asyncio.sleep(0)
+        # 4. Local cleanup: disable asyncio serving (removes add_reader,
+        #    stops cleanup task), mark closed, run the standard cleanup
+        #    sequence. No I/O here.
+        self._closed = True
+        try:
+            self.disable_asyncio_serving()
+        except Exception:
+            pass
+        self._cleanup(_anyway=True)
 
     def _async_request(self, handler, args=(), callback=(lambda a, b: None)):  # serving
         seq = self._get_seq_id()

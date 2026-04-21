@@ -61,7 +61,41 @@ Quick Examples
 
     asyncio.run(main())
 
-For more details on async support, see ``docs/LIMITATIONS.md``
+**Client for AsyncioServer** — use ``await rpyc.async_connect(...)``, NOT
+``rpyc.connect()``::
+
+    import rpyc, asyncio
+
+    async def main():
+        conn = await rpyc.async_connect("localhost", 18861)
+        try:
+            # Native async method — just await.
+            result = await conn.root.some_async_method(42)
+            # Sync remote method? Wrap with rpyc.async_() to stay event-driven.
+            sync_result = await rpyc.async_(conn.root.some_sync_method)(42)
+        finally:
+            await conn.aclose()
+
+    asyncio.run(main())
+
+``rpyc.connect()`` is **synchronous** — it blocks ``socket.connect`` and
+every later ``sync_request`` on the calling thread. From inside an asyncio
+event loop it now raises ``RuntimeError`` pointing at
+``rpyc.async_connect``. See ``docs/DESIGN_ASYNC_CONNECT_POLICY.md``.
+
+For more details on async support, see ``docs/LIMITATIONS.md``.
+
+.. note::
+
+   **NO POLLING POLICY (AsyncioServer).** The asyncio server and the
+   asyncio-serving code path inside ``Connection`` must never poll via
+   ``while not conn.closed: await asyncio.sleep(x)``. The old 100 ms poll
+   burned ~33% CPU with just two active connections. Use event-driven
+   primitives instead: ``await conn.wait_closed()``,
+   ``conn.add_close_callback(cb)``, ``asyncio.Event``, or
+   ``loop.add_reader(fd, cb)``. See ``docs/ASYNCIO_SERVER_MIGRATION.md``
+   for the full policy and ``tests/test_no_polling_policy.py`` for
+   enforcement.
 
 .. figure:: http://rpyc.readthedocs.org/en/latest/_images/screenshot.png
    :align: center

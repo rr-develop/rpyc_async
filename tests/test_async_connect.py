@@ -1,119 +1,21 @@
 """
-TDD tests for async_connect module.
+Tests for async_connect module.
 
-CRITICAL: These tests verify that async_connect() provides fully async,
-non-blocking socket connections for RPyC.
+Verifies that ``async_connect`` provides fully async, non-blocking socket
+connections for RPyC talking to an ``AsyncioServer``. The formerly-tested
+``AsyncioStream`` shim is gone (dead code — see the design document
+docs/DESIGN_ASYNC_CONNECT_POLICY.md).
 
-Tests verify:
-1. AsyncioStream implements Stream interface correctly
-2. AsyncioStream wraps asyncio streams properly
-3. async_connect() establishes connections without blocking
-4. Connection has asyncio serving enabled
-5. Timeout handling works correctly
-6. Error handling is proper
+After the sync_request guard landed, synchronous RPC like
+``conn.root.echo()`` from inside a running event loop now raises
+``RuntimeError`` by policy. These tests therefore talk to the connection
+exclusively via the async path (``await conn.root.*``).
 """
 import asyncio
 import unittest
-import socket
-from unittest.mock import Mock, patch, AsyncMock
-from rpyc.core.async_connect import AsyncioStream, async_connect
+from rpyc.core.async_connect import async_connect
 from rpyc.core.service import VoidService
 from rpyc.utils.server import ThreadedServer
-
-
-class TestAsyncioStream(unittest.TestCase):
-    """Test AsyncioStream class."""
-
-    def setUp(self):
-        """Create mock reader/writer and event loop."""
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-
-        # Mock asyncio streams
-        self.mock_reader = Mock(spec=asyncio.StreamReader)
-        self.mock_reader._buffer = b""
-        self.mock_writer = Mock(spec=asyncio.StreamWriter)
-        self.mock_writer.is_closing.return_value = False
-
-        # Mock socket for fileno()
-        self.mock_sock = Mock()
-        self.mock_sock.fileno.return_value = 42
-        self.mock_writer.get_extra_info.return_value = self.mock_sock
-
-        self.stream = AsyncioStream(self.mock_reader, self.mock_writer, self.loop)
-
-    def tearDown(self):
-        """Clean up event loop."""
-        self.loop.close()
-
-    def test_asyncio_stream_has_max_io_chunk(self):
-        """Test that AsyncioStream has MAX_IO_CHUNK constant."""
-        self.assertTrue(hasattr(AsyncioStream, 'MAX_IO_CHUNK'))
-        self.assertIsInstance(AsyncioStream.MAX_IO_CHUNK, int)
-        self.assertGreater(AsyncioStream.MAX_IO_CHUNK, 0)
-
-    def test_asyncio_stream_closed_property(self):
-        """Test closed property."""
-        self.assertFalse(self.stream.closed)
-
-        # Mark as closing
-        self.mock_writer.is_closing.return_value = True
-        self.assertTrue(self.stream.closed)
-
-    def test_asyncio_stream_fileno(self):
-        """Test fileno() returns correct file descriptor."""
-        fd = self.stream.fileno()
-        self.assertEqual(fd, 42)
-
-    def test_asyncio_stream_fileno_when_closed(self):
-        """Test fileno() raises EOFError when closed."""
-        self.stream._closed = True
-        with self.assertRaises(EOFError):
-            self.stream.fileno()
-
-    def test_asyncio_stream_close(self):
-        """Test close() closes the writer."""
-        self.stream.close()
-        self.mock_writer.close.assert_called_once()
-        self.assertTrue(self.stream._closed)
-
-    def test_asyncio_stream_read_success(self):
-        """Test read() returns correct data."""
-        # Mock async read
-        async def mock_readexactly(count):
-            return b"test_data"[:count]
-
-        self.mock_reader.readexactly = mock_readexactly
-
-        # Read 4 bytes
-        data = self.stream.read(4)
-        self.assertEqual(data, b"test")
-
-    def test_asyncio_stream_read_when_closed(self):
-        """Test read() raises EOFError when closed."""
-        self.stream._closed = True
-        with self.assertRaises(EOFError):
-            self.stream.read(10)
-
-    def test_asyncio_stream_write_success(self):
-        """Test write() sends data correctly."""
-        # Mock async drain
-        async def mock_drain():
-            pass
-
-        self.mock_writer.drain = mock_drain
-
-        # Write data
-        self.stream.write(b"test_data")
-
-        # Verify writer.write() was called
-        self.mock_writer.write.assert_called_once_with(b"test_data")
-
-    def test_asyncio_stream_write_when_closed(self):
-        """Test write() raises EOFError when closed."""
-        self.stream._closed = True
-        with self.assertRaises(EOFError):
-            self.stream.write(b"test")
 
 
 class TestAsyncConnect(unittest.IsolatedAsyncioTestCase):
@@ -147,122 +49,105 @@ class TestAsyncConnect(unittest.IsolatedAsyncioTestCase):
         cls.server.close()
         cls.server_thread.join(timeout=5)
 
+    async def _aclose(self, conn):
+        """Close helper that uses aclose if present, else raw cleanup.
+
+        After the sync_request guard landed, sync `close()` on an
+        asyncio-enabled connection running on the current loop would raise.
+        Tests use the event-driven `aclose()` path.
+        """
+        if hasattr(conn, "aclose"):
+            await conn.aclose()
+        else:  # pragma: no cover — should not happen after refactor
+            conn.close()
+
     async def test_async_connect_basic(self):
         """Test basic async_connect() functionality."""
-        # Connect to test server
         conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
-
-        # Verify connection is established
         self.assertIsNotNone(conn)
         self.assertFalse(conn.closed)
-
-        # Clean up
-        conn.close()
+        await self._aclose(conn)
 
     async def test_async_connect_no_blocking(self):
-        """
-        Test that async_connect() doesn't block event loop.
-
-        CRITICAL: This is the KEY test - verifies NO blocking I/O!
-        """
+        """async_connect() must not block the event loop."""
         start_time = asyncio.get_event_loop().time()
-
-        # Connect to server (should be instant, not blocked)
         conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
-
         elapsed = asyncio.get_event_loop().time() - start_time
-
-        # Connection should be very fast (< 0.5 seconds for localhost)
         self.assertLess(elapsed, 0.5, f"Connection took {elapsed}s - might be blocking!")
-
-        # Verify connection works
         self.assertFalse(conn.closed)
-
-        conn.close()
+        await self._aclose(conn)
 
     async def test_async_connect_timeout(self):
         """Test that timeout parameter works correctly."""
-        # Try to connect to non-routable IP (should timeout)
         with self.assertRaises(ConnectionError) as ctx:
             await async_connect("192.0.2.1", 9999, timeout=0.5)
-
-        # Verify timeout error message
         self.assertIn("timed out", str(ctx.exception).lower())
 
     async def test_async_connect_connection_refused(self):
         """Test error handling for connection refused."""
-        # Try to connect to closed port
         with self.assertRaises(ConnectionError) as ctx:
             await async_connect("127.0.0.1", 1, timeout=1.0)
-
-        # Verify error message
         self.assertIn("failed to connect", str(ctx.exception).lower())
 
-    async def test_async_connect_rpc_calls(self):
-        """Test that RPC calls work with async_connect()."""
+    async def test_async_connect_rpc_calls_via_async_wrapper(self):
+        """RPC calls from async code go through the awaitable async path.
+
+        Synchronous ``conn.root.echo("test")`` from inside a running event
+        loop is now forbidden by the ``sync_request`` guard (it would block
+        the loop). Use ``rpyc.async_(proxy)`` to get an async wrapper whose
+        result can be awaited.
+        """
+        import rpyc
         conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
+        try:
+            async_echo = rpyc.async_(conn.root.echo)
+            async_add = rpyc.async_(conn.root.add)
 
-        # Make sync RPC call
-        result = conn.root.echo("test")
-        self.assertEqual(result, "echo: test")
+            result = await async_echo("test")
+            self.assertEqual(result, "echo: test")
 
-        # Make another call
-        result = conn.root.add(2, 3)
-        self.assertEqual(result, 5)
-
-        conn.close()
+            result = await async_add(2, 3)
+            self.assertEqual(result, 5)
+        finally:
+            await self._aclose(conn)
 
     async def test_async_connect_has_asyncio_attributes(self):
-        """Test that connection has asyncio attributes (even if not enabled)."""
+        """async_connect() must auto-enable asyncio serving on the connection."""
         conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
-
-        # Check asyncio attributes exist (they're always present after __init__)
-        self.assertTrue(hasattr(conn, '_asyncio_enabled'))
-        self.assertTrue(hasattr(conn, '_asyncio_loop'))
-        self.assertTrue(hasattr(conn, '_loop_fd_registered'))
-
-        # Note: async_connect() creates standard sync connection,
-        # so asyncio serving is NOT enabled by default.
-        # Users can call conn.enable_asyncio_serving() if needed.
-
-        conn.close()
+        try:
+            self.assertTrue(hasattr(conn, '_asyncio_enabled'))
+            self.assertTrue(hasattr(conn, '_asyncio_loop'))
+            self.assertTrue(hasattr(conn, '_loop_fd_registered'))
+            self.assertTrue(
+                conn._asyncio_enabled,
+                "async_connect() must auto-enable asyncio serving",
+            )
+        finally:
+            await self._aclose(conn)
 
     async def test_async_connect_multiple_concurrent(self):
-        """
-        Test multiple concurrent connections work without blocking.
-
-        CRITICAL: This tests that we don't exhaust ThreadPoolExecutor!
-        With old blocking connect(), this would deadlock with many connections.
-        """
-        # Create 20 concurrent connections
+        """Multiple concurrent connections must not block each other."""
+        import rpyc
         tasks = [
             async_connect("127.0.0.1", self.server_port, timeout=5.0)
             for _ in range(20)
         ]
-
         start_time = asyncio.get_event_loop().time()
-
-        # All should connect concurrently (not sequentially!)
         conns = await asyncio.gather(*tasks)
-
         elapsed = asyncio.get_event_loop().time() - start_time
-
-        # Should complete fast even with 20 connections
-        # If blocking, would take 20 * connection_time sequentially
         self.assertLess(elapsed, 2.0, f"20 connections took {elapsed}s - likely blocking!")
-
-        # Verify all connections work
         self.assertEqual(len(conns), 20)
         for conn in conns:
             self.assertFalse(conn.closed)
 
-        # Test RPC calls work on all connections
-        results = [conn.root.add(1, 1) for conn in conns]
-        self.assertEqual(results, [2] * 20)
+        # Exercise each connection through the async RPC path.
+        results = await asyncio.gather(
+            *[rpyc.async_(c.root.add)(1, 1) for c in conns]
+        )
+        self.assertEqual(list(results), [2] * 20)
 
-        # Clean up
         for conn in conns:
-            conn.close()
+            await self._aclose(conn)
 
     async def test_async_connect_custom_config(self):
         """Test async_connect() with custom config."""
@@ -270,86 +155,64 @@ class TestAsyncConnect(unittest.IsolatedAsyncioTestCase):
             "allow_public_attrs": True,
             "allow_safe_attrs": True,
         }
-
         conn = await async_connect(
-            "127.0.0.1",
-            self.server_port,
-            config=custom_config,
-            timeout=5.0
+            "127.0.0.1", self.server_port, config=custom_config, timeout=5.0
         )
-
-        # Verify config was applied
-        self.assertEqual(conn._config["allow_public_attrs"], True)
-        self.assertEqual(conn._config["allow_safe_attrs"], True)
-
-        conn.close()
+        try:
+            self.assertEqual(conn._config["allow_public_attrs"], True)
+            self.assertEqual(conn._config["allow_safe_attrs"], True)
+        finally:
+            await self._aclose(conn)
 
     async def test_async_connect_accepts_loop_parameter(self):
         """Test that async_connect() accepts loop parameter without error."""
         loop = asyncio.get_running_loop()
-
-        # Should not raise error when loop parameter is provided
-        conn = await async_connect("127.0.0.1", self.server_port, loop=loop, timeout=5.0)
-
-        # Verify connection works
-        self.assertIsNotNone(conn)
-        self.assertFalse(conn.closed)
-
-        conn.close()
+        conn = await async_connect(
+            "127.0.0.1", self.server_port, loop=loop, timeout=5.0
+        )
+        try:
+            self.assertIsNotNone(conn)
+            self.assertFalse(conn.closed)
+        finally:
+            await self._aclose(conn)
 
     async def test_async_connect_root_ready_immediately(self):
-        """
-        TDD TEST: Verify that conn.root is ready immediately after async_connect.
-
-        CRITICAL: This test detects the bug where accessing conn.root blocks.
-        After fix, root should be pre-fetched during async_connect().
-        """
+        """Verify that _remote_root is pre-fetched during async_connect()."""
         conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
-
-        # After async_connect, _remote_root should already be set
-        # This prevents blocking sync_request on first access
-        self.assertIsNotNone(conn._remote_root,
-                             "Bug detected: _remote_root is None after async_connect! "
-                             "This will cause blocking sync_request on first conn.root access.")
-
-        # Verify root works without blocking
-        root = conn.root
-        self.assertIsNotNone(root)
-
-        conn.close()
+        try:
+            self.assertIsNotNone(
+                conn._remote_root,
+                "Bug detected: _remote_root is None after async_connect! "
+                "This will cause blocking sync_request on first conn.root access.",
+            )
+            root = conn.root
+            self.assertIsNotNone(root)
+        finally:
+            await self._aclose(conn)
 
     async def test_async_connect_no_blocking_on_root_access(self):
-        """
-        TDD TEST: Verify accessing conn.root doesn't block event loop.
-
-        This is the main bug fix test - ensures eager handshake prevents blocking.
-        """
-        import concurrent.futures
-
+        """Accessing conn.root must not block the event loop (eager handshake)."""
         conn = await async_connect("127.0.0.1", self.server_port, timeout=5.0)
 
-        # Create a task that should complete quickly
         async def fast_task():
             await asyncio.sleep(0.01)
             return "completed"
 
-        # Start fast task
         task = asyncio.create_task(fast_task())
 
-        # Access root (should NOT block event loop if handshake was eager)
-        start_time = asyncio.get_event_loop().time()
-        root = conn.root  # Should be instant - no RPC needed
-        elapsed = asyncio.get_event_loop().time() - start_time
-
-        # Accessing root should be instant (< 0.01s) since it was pre-fetched
-        self.assertLess(elapsed, 0.01,
-                        f"Accessing conn.root took {elapsed}s - likely doing sync_request!")
-
-        # Fast task should have completed (proves event loop wasn't blocked)
-        await asyncio.wait_for(task, timeout=0.1)
-        self.assertEqual(await task, "completed")
-
-        conn.close()
+        try:
+            start_time = asyncio.get_event_loop().time()
+            _ = conn.root  # Should be instant — no RPC needed.
+            elapsed = asyncio.get_event_loop().time() - start_time
+            self.assertLess(
+                elapsed,
+                0.01,
+                f"Accessing conn.root took {elapsed}s - likely doing sync_request!",
+            )
+            await asyncio.wait_for(task, timeout=0.1)
+            self.assertEqual(await task, "completed")
+        finally:
+            await self._aclose(conn)
 
 
 

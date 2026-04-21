@@ -101,13 +101,12 @@ class TestNetrefPassBackFix(unittest.TestCase):
             assert ready_queue.get(timeout=5) == "ready"
             await asyncio.sleep(0.1)
 
-            # Connect
-            self.conn = rpyc.connect('localhost', self.port)
-            loop = asyncio.get_running_loop()
-            self.conn.enable_asyncio_serving(loop=loop)
+            # Connect via event-driven async path
+            self.conn = await rpyc.async_connect('localhost', self.port)
 
-            # Get server root (sync method returns netref to service object)
-            root_via_method = self.conn.root.get_root()
+            # Get server root (sync method returns netref to service object).
+            # From async code sync RPC must go through rpyc.async_() wrapper.
+            root_via_method = await rpyc.async_(self.conn.root.get_root)()
             print(f"\n[TEST] Got root from server: {root_via_method}")
             print(f"[TEST] root_via_method type: {type(root_via_method)}")
             print(f"[TEST] root_via_method.____conn__: {root_via_method.____conn__}")
@@ -128,7 +127,7 @@ class TestNetrefPassBackFix(unittest.TestCase):
             assert type(echoed).__name__ == type(root_via_method).__name__
             print(f"[TEST] ✓ Echoed proxy has same type as original")
 
-            self.conn.disable_asyncio_serving()
+            await self.conn.aclose()
 
         asyncio.run(test())
 

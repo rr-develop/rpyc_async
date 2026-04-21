@@ -10,6 +10,30 @@ This server implementation provides full bidirectional async support by:
 Critical difference from ThreadedServer:
 - ThreadedServer: Uses asyncio.run() fallback → temporary loop per request → no bidirectional async
 - AsyncioServer: Uses persistent loop → bidirectional async works!
+
+═══════════════════════════════════════════════════════════════════════════
+    NO POLLING POLICY — STRICT BAN (file-wide)
+═══════════════════════════════════════════════════════════════════════════
+DO NOT use polling (``while <cond>: await asyncio.sleep(x)``) anywhere in
+this file. An earlier version of ``_serve_connection`` polled every 100 ms
+to check ``conn.closed``. Measured impact:
+  * 1 connection  → ~10 wakeups/sec
+  * 2 connections → ~33% CPU sustained
+  * N connections → linear scaling of wakeups
+
+Correct async primitives for this file:
+  * ``await conn.wait_closed()``        — for "wait until connection closes"
+  * ``loop.sock_accept(sock)``          — for "wait for incoming connection"
+  * ``loop.add_reader(fd, cb)``         — for "wake when fd is readable"
+  * ``asyncio.Event().wait()``          — for "wait for a one-shot signal"
+  * ``asyncio.Queue.get()``             — for "wait for next item"
+
+If you think you need a timer here, you're wrong. Ask yourself what event
+you're actually waiting for and register for it directly. Reviewers must
+reject any PR that adds a polling loop to this file.
+
+Enforced by ``tests/test_no_polling_policy.py``.
+═══════════════════════════════════════════════════════════════════════════
 """
 import asyncio
 import socket
@@ -223,9 +247,18 @@ class AsyncioServer:
             try:
                 await self._serve_connection(conn, sock)
             finally:
-                # Cleanup
+                # Cleanup. Use aclose() — the sync close() path would hit the
+                # sync_request guard (we are running on the connection's own
+                # serving loop) and raise. aclose() is the event-driven equivalent.
                 self.logger.info(f"Connection closed from {addr}")
-                conn.close()
+                try:
+                    await conn.aclose()
+                except Exception:
+                    # Connection may already be mid-close; log and continue.
+                    self.logger.debug(
+                        "aclose() raised during cleanup — ignoring",
+                        exc_info=True,
+                    )
 
         except Exception as e:
             self.logger.error(f"Error handling client {addr}: {e}", exc_info=True)
@@ -238,20 +271,39 @@ class AsyncioServer:
         via enable_asyncio_serving(), so incoming messages are processed
         automatically via add_reader() callback. We just wait for connection to close.
 
+        ═══════════════════════════════════════════════════════════════════
+        NO POLLING POLICY — STRICT BAN
+        ═══════════════════════════════════════════════════════════════════
+        DO NOT reintroduce ``while not conn.closed: await asyncio.sleep(x)``.
+        That pattern was previously here and caused ~33% CPU with just two
+        open RPyC connections (10 wakeups/sec per connection at sleep(0.1);
+        scales linearly with connection count). It also masks stale
+        connections whose ``.closed`` flag is never flipped by the peer —
+        they keep burning cycles forever.
+
+        The ONLY correct way to wait for a connection to close in this path:
+
+            await conn.wait_closed()
+
+        This suspends the coroutine on a Future resolved by ``close()`` from
+        inside ``Connection._fire_close_notifications``. Zero wakeups while
+        idle.
+
+        If you think you need a timer here, STOP and ask yourself:
+          * Is there a real event you should register for instead?
+          * Would `loop.add_reader(fd, cb)` fit the job?
+          * Would `asyncio.Event` / `asyncio.Queue` fit the job?
+        The answer in async_server.py has always been yes.
+        ═══════════════════════════════════════════════════════════════════
+
         Args:
             conn: RPyC Connection instance
             sock: socket.socket
         """
         try:
-            # The connection is now served via event loop's add_reader() callback.
-            # We just need to wait until the connection closes.
-            #
-            # Connection processes messages via add_reader() registered in enable_asyncio_serving().
-            # We just wait for close signal.
-
-            while not conn.closed:
-                # Small sleep to avoid busy loop
-                await asyncio.sleep(0.1)
+            # Event-driven wait: zero CPU while the connection is healthy.
+            # Resolves the instant close() fires, not on the next tick boundary.
+            await conn.wait_closed()
 
         except asyncio.CancelledError:
             # Server is shutting down

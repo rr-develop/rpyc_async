@@ -143,91 +143,77 @@ class TestE2EAsyncMethod(unittest.TestCase):
     def test_async_method_basic(self):
         """Test basic async method call across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                # Enable asyncio serving to handle async calls
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
 
                 # Call async method and await result
                 result = await conn.root.async_hello("world")
                 self.assertEqual(result, "Hello, world!")
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_async_method_with_args(self):
         """Test async method with multiple arguments across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
 
                 result = await conn.root.async_add(5, 3)
                 self.assertEqual(result, 8)
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_async_method_exception(self):
         """Test async method that raises exception across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                # Enable asyncio serving to handle async calls
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
 
                 with self.assertRaises(ValueError) as ctx:
                     await conn.root.async_error()
 
                 self.assertIn("Intentional async error", str(ctx.exception))
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_mixed_sync_async(self):
-        """Test calling both sync and async methods across processes."""
+        """Test calling both sync and async methods across processes.
+
+        Sync remote methods still go through HANDLE_CALL, which from
+        inside a running event loop would block. Use ``rpyc.async_()`` to
+        get an async wrapper; this keeps the call event-driven.
+        """
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                # Enable asyncio serving to handle async calls
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
-
-                # Call sync method (should work normally)
-                sync_result = conn.root.sync_hello("sync")
+                # Sync remote method, called via async wrapper.
+                sync_result = await rpyc.async_(conn.root.sync_hello)("sync")
                 self.assertEqual(sync_result, "Sync hello, sync!")
 
-                # Call async method
+                # Native async remote method.
                 async_result = await conn.root.async_hello("async")
                 self.assertEqual(async_result, "Hello, async!")
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_multiple_async_calls(self):
         """Test multiple concurrent async method calls across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                # Enable asyncio serving to handle async calls
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
 
                 # Launch multiple async calls concurrently
                 tasks = [
@@ -242,8 +228,7 @@ class TestE2EAsyncMethod(unittest.TestCase):
                 expected = [0, 2, 4, 6, 8]
                 self.assertEqual(results, expected)
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 

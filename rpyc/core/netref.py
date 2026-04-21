@@ -145,12 +145,16 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
             refcount_holder = object.__getattribute__(self, "_refcount_holder")
 
             if cleanup_conn is not None and refcount_holder is not None:
-                # Queue deletion for background processing (ONLY mechanism)
+                # Queue deletion for background processing (ONLY mechanism).
+                # Uses _enqueue_deletion (not bare _pending_deletions.put) so
+                # the background cleanup task is woken via its asyncio.Event.
+                # The task does NOT poll — it sleeps on the event until we
+                # signal. See NO-POLLING policy in protocol.py.
                 refcount_holder["refcount"] = self.____refcount__
-                cleanup_conn._pending_deletions.put((
+                cleanup_conn._enqueue_deletion(
                     refcount_holder["id_pack"],
-                    self.____refcount__
-                ))
+                    self.____refcount__,
+                )
             else:
                 # This should NEVER happen - cleanup callback always registered
                 # If this occurs, it's a critical bug in _unbox()

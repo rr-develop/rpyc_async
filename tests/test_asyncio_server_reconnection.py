@@ -186,32 +186,26 @@ class TestAsyncioServerReconnection(unittest.TestCase):
         """Test two sequential connections with async methods."""
         async def test():
             print("\n[TEST] First async connection...")
-            conn1 = rpyc.connect("localhost", self.port)
+            conn1 = await rpyc.async_connect("localhost", self.port)
             try:
-                loop = asyncio.get_running_loop()
-                conn1.enable_asyncio_serving(loop=loop)
                 result1 = await conn1.root.async_ping("first")
                 self.assertEqual(result1, "async pong: first")
                 print(f"[TEST] First async connection OK: {result1}")
             finally:
-                conn1.disable_asyncio_serving()
-                conn1.close()
+                await conn1.aclose()
                 print("[TEST] First async connection closed")
 
             # Small delay
             await asyncio.sleep(0.1)
 
             print("\n[TEST] Second async connection...")
-            conn2 = rpyc.connect("localhost", self.port)
+            conn2 = await rpyc.async_connect("localhost", self.port)
             try:
-                loop = asyncio.get_running_loop()
-                conn2.enable_asyncio_serving(loop=loop)
                 result2 = await conn2.root.async_ping("second")
                 self.assertEqual(result2, "async pong: second")
                 print(f"[TEST] Second async connection OK: {result2}")
             finally:
-                conn2.disable_asyncio_serving()
-                conn2.close()
+                await conn2.aclose()
                 print("[TEST] Second async connection closed")
 
         asyncio.run(test())
@@ -249,17 +243,14 @@ class TestAsyncioServerReconnection(unittest.TestCase):
         async def test():
             print("\n[TEST] Concurrent connections test...")
 
-            # Create 3 concurrent connections
-            conn1 = rpyc.connect("localhost", self.port)
-            conn2 = rpyc.connect("localhost", self.port)
-            conn3 = rpyc.connect("localhost", self.port)
+            # Create 3 concurrent connections via the async-native path.
+            conn1, conn2, conn3 = await asyncio.gather(
+                rpyc.async_connect("localhost", self.port),
+                rpyc.async_connect("localhost", self.port),
+                rpyc.async_connect("localhost", self.port),
+            )
 
             try:
-                loop = asyncio.get_running_loop()
-                conn1.enable_asyncio_serving(loop=loop)
-                conn2.enable_asyncio_serving(loop=loop)
-                conn3.enable_asyncio_serving(loop=loop)
-
                 # Make concurrent async calls
                 results = await asyncio.gather(
                     conn1.root.async_ping("conn1"),
@@ -273,12 +264,9 @@ class TestAsyncioServerReconnection(unittest.TestCase):
                 print(f"[TEST] Concurrent connections OK: {results}")
 
             finally:
-                conn1.disable_asyncio_serving()
-                conn2.disable_asyncio_serving()
-                conn3.disable_asyncio_serving()
-                conn1.close()
-                conn2.close()
-                conn3.close()
+                await asyncio.gather(
+                    conn1.aclose(), conn2.aclose(), conn3.aclose()
+                )
 
         asyncio.run(test())
 

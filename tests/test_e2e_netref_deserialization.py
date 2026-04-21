@@ -238,13 +238,10 @@ class TestE2ENetrefDeserialization(unittest.TestCase):
                 return "callback_executed"
 
             # Connect to server
-            server_conn = rpyc.connect("localhost", self.port)
+            server_conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                # Enable asyncio serving (CRITICAL for bidirectional async)
-                loop = asyncio.get_running_loop()
-                server_conn.enable_asyncio_serving(loop=loop)
-                print("✓ Asyncio serving enabled on client")
+                print("✓ Server connection ready (asyncio serving auto-enabled)")
 
                 print("\n[TEST] Calling server method with client object and callback...")
                 # Call server method, passing client object and callback
@@ -274,8 +271,7 @@ class TestE2ENetrefDeserialization(unittest.TestCase):
                 print("✓ TEST PASSED! Object was deserialized to original.")
 
             finally:
-                server_conn.disable_asyncio_serving()
-                server_conn.close()
+                await server_conn.aclose()
 
         asyncio.run(test())
 
@@ -315,11 +311,9 @@ class TestE2ENetrefDeserialization(unittest.TestCase):
                 return f"received_{obj.name}"
 
             # Connect to server
-            server_conn = rpyc.connect("localhost", self.port)
+            server_conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                loop = asyncio.get_running_loop()
-                server_conn.enable_asyncio_serving(loop=loop)
 
                 print("\n[TEST] Calling server with two objects...")
                 results = await server_conn.root.async_multiple_callbacks(obj1, obj2, my_callback)
@@ -345,8 +339,7 @@ class TestE2ENetrefDeserialization(unittest.TestCase):
                 print("✓ TEST PASSED! Multiple objects deserialized correctly.")
 
             finally:
-                server_conn.disable_asyncio_serving()
-                server_conn.close()
+                await server_conn.aclose()
 
         asyncio.run(test())
 
@@ -391,11 +384,9 @@ class TestE2ENetrefDeserialization(unittest.TestCase):
                 return "methods_tested"
 
             # Connect to server
-            server_conn = rpyc.connect("localhost", self.port)
+            server_conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                loop = asyncio.get_running_loop()
-                server_conn.enable_asyncio_serving(loop=loop)
 
                 print("\n[TEST] Calling server...")
                 result = await server_conn.root.async_call_with_callback(client_obj, my_callback)
@@ -410,8 +401,7 @@ class TestE2ENetrefDeserialization(unittest.TestCase):
                 print("✓ TEST PASSED! Methods work on deserialized object.")
 
             finally:
-                server_conn.disable_asyncio_serving()
-                server_conn.close()
+                await server_conn.aclose()
 
         asyncio.run(test())
 

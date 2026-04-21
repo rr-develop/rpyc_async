@@ -176,11 +176,9 @@ class TestE2ERecursiveAsync(unittest.TestCase):
     def test_recursive_countdown_depth_10(self):
         """Test recursive async countdown to depth 10 across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
                 result = await conn.root.async_countdown(10)
 
                 # Should return [10, 9, 8, ..., 1, 0]
@@ -188,19 +186,16 @@ class TestE2ERecursiveAsync(unittest.TestCase):
                 expected = list(range(10, -1, -1))
                 self.assertEqual(list(result), expected)
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_recursive_fibonacci(self):
         """Test recursive async Fibonacci across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
                 # Fibonacci(10) = 55
                 result = await conn.root.async_fibonacci(10)
                 self.assertEqual(result, 55)
@@ -209,19 +204,16 @@ class TestE2ERecursiveAsync(unittest.TestCase):
                 result = await conn.root.async_fibonacci(5)
                 self.assertEqual(result, 5)
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_recursive_factorial(self):
         """Test recursive async factorial across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
                 # 5! = 120
                 result = await conn.root.async_factorial(5)
                 self.assertEqual(result, 120)
@@ -230,26 +222,22 @@ class TestE2ERecursiveAsync(unittest.TestCase):
                 result = await conn.root.async_factorial(10)
                 self.assertEqual(result, 3628800)
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 
     def test_deep_recursion_depth_20(self):
         """Test deep recursion (depth 20) across processes."""
         async def test():
-            conn = rpyc.connect("localhost", self.port)
+            conn = await rpyc.async_connect("localhost", self.port)
 
             try:
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
                 result = await conn.root.async_countdown(20)
 
                 expected = list(range(20, -1, -1))
                 self.assertEqual(list(result), expected)
             finally:
-                conn.disable_asyncio_serving()
-                conn.close()
+                await conn.aclose()
 
         asyncio.run(test())
 

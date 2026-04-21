@@ -8,6 +8,153 @@ This guide helps you migrate from `ThreadedServer` to `AsyncioServer` for bidire
 
 ---
 
+## Clients: use `rpyc.async_connect`, NEVER `rpyc.connect`
+
+If your code runs inside an asyncio event loop, connect to an
+`AsyncioServer` with `rpyc.async_connect`, not `rpyc.connect`.
+
+### Forbidden
+
+```python
+# ❌ Blocks the event loop on socket.connect(), and every later
+#    sync_request is blocking too. Raises RuntimeError since v5.3.
+conn = rpyc.connect("localhost", 18861)
+```
+
+### Required
+
+```python
+# ✅ Event-driven TCP connect + auto-enables asyncio serving +
+#    pre-fetches conn.root. Zero blocking I/O.
+conn = await rpyc.async_connect("localhost", 18861)
+
+try:
+    # Native async method — just await the netref call.
+    result = await conn.root.async_method(42)
+
+    # Sync remote method? Wrap it so the call is event-driven.
+    result = await rpyc.async_(conn.root.sync_method)(42)
+finally:
+    # Async close. conn.close() from async code would hit the
+    # sync_request guard; use aclose() instead.
+    await conn.aclose()
+```
+
+### Why
+
+`rpyc.connect` is a **synchronous** API:
+
+1. `socket.connect()` blocks the calling thread — and when that thread is
+   the asyncio event loop, every task on that loop stalls for the full
+   TCP (and TLS, for `ssl_connect`) handshake. Real-world: tens to
+   hundreds of milliseconds, enough to miss timers and starve other
+   connections.
+2. Every subsequent `sync_request` (including the implicit
+   `sync_request(HANDLE_GETROOT)` triggered by `conn.root`) blocks the
+   loop again, once per round-trip.
+
+`async_connect` replaces both:
+
+| Step                 | `rpyc.connect`                          | `rpyc.async_connect`                              |
+|----------------------|-----------------------------------------|---------------------------------------------------|
+| TCP connect          | blocking `socket.connect`               | `loop.sock_connect` — event-driven                |
+| Asyncio serving      | user must remember `enable_asyncio_serving(loop)` | enabled automatically                             |
+| First `conn.root`    | blocking `sync_request(HANDLE_GETROOT)` | eager pre-fetch via `async_request` + `await`     |
+| Close                | blocking `sync_request(HANDLE_CLOSE)`   | `await conn.aclose()` — fire-and-forget + drain   |
+
+Enforced at runtime: `rpyc.connect`, `rpyc.unix_connect`, and
+`rpyc.ssl_connect` refuse to run inside a running loop with a clear
+`RuntimeError` pointing at `async_connect`. User-level RPC
+(`HANDLE_CALL` / `HANDLE_ASYNC_CALL`) via `conn.sync_request` also
+refuses, pointing at `rpyc.async_(proxy)(...)` / `await conn.root.async_method(...)`.
+
+### `rpyc.async_()` for sync remote methods
+
+Netref calls to a **sync** remote method use `HANDLE_CALL` → blocking
+path. From async code, wrap the proxy once:
+
+```python
+add = rpyc.async_(conn.root.add)
+result = await add(2, 3)   # returns AsyncResult → await gives the value
+```
+
+Native `async def` remote methods are detected automatically and can be
+awaited directly (`await conn.root.async_method(...)`).
+
+---
+
+## NO POLLING POLICY — Strict Ban
+
+AsyncioServer and the asyncio-serving code path inside `Connection` **must not**
+contain polling loops. This is a hard rule, enforced by
+`tests/test_no_polling_policy.py`.
+
+### Forbidden
+
+```python
+# ❌ NEVER — this was the bug. ~10 wakeups/sec per connection.
+while not conn.closed:
+    await asyncio.sleep(0.1)
+
+# ❌ NEVER — same problem, any interval is wrong.
+while running:
+    await do_work()
+    await asyncio.sleep(interval)
+```
+
+**Measured impact** of the old 100 ms polling loop in `_serve_connection`:
+
+| Connections | CPU usage        |
+|-------------|------------------|
+| 0 (idle)    | 1.2%             |
+| 2 active    | ~33% sustained   |
+| N active    | linear increase  |
+
+Polling also masks stale state: if the peer never flips `.closed`, the loop
+keeps burning cycles forever.
+
+### Required
+
+Use event-driven primitives:
+
+```python
+# ✅ Wait for connection to close — zero CPU while idle.
+await conn.wait_closed()
+
+# ✅ Sync callback equivalent (thread-safe, fires exactly once).
+conn.add_close_callback(lambda: print("closed"))
+
+# ✅ Wake on work-available instead of a timer.
+event = asyncio.Event()
+# producer:  loop.call_soon_threadsafe(event.set)
+# consumer:  await event.wait(); event.clear()
+
+# ✅ Wake when a file descriptor is readable.
+loop.add_reader(fd, callback)
+```
+
+### API added for this policy (Connection)
+
+- `await conn.wait_closed()` — coroutine that resolves when the connection
+  closes. Suspends on a Future; no wake-ups while waiting.
+- `conn.add_close_callback(cb)` — one-shot thread-safe callback.
+- `conn._enqueue_deletion(id_pack, refcount)` — internal, called by netrefs;
+  wakes the background cleanup task via an `asyncio.Event`. The cleanup task
+  does NOT run on a timer.
+
+### Reviewer checklist
+
+Reject any PR that:
+
+- Adds `await asyncio.sleep(...)` inside a `while` / `for` loop in
+  `rpyc/utils/async_server.py` or the asyncio sections of
+  `rpyc/core/protocol.py`.
+- Polls `conn.closed` from async code instead of awaiting `wait_closed()`.
+- Introduces a "backoff timer" in the cleanup loop instead of re-waiting on
+  the `_deletion_available` event.
+
+---
+
 ## Why Migrate to AsyncioServer?
 
 ### ThreadedServer Limitations
