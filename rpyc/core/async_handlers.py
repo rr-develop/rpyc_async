@@ -64,62 +64,82 @@ async def _handle_async_call(
         result = await obj
         return result
 
-    # Case 2: obj is async function - call and await
-    # CRITICAL FIX: Safely handle netref objects
-    # inspect.iscoroutinefunction() may fail on netref due to inability to access
-    # private attributes like __code__. In this case, assume it's NOT a coroutine
-    # function and try calling it normally.
+    # ═══════════════════════════════════════════════════════════════════
+    # Netref fast-path — MUST run before ``inspect.iscoroutinefunction``.
+    #
+    # If ``obj`` is a netref, probe its local ``____id_pack__`` /
+    # ``____is_async__`` hints via ``object.__getattribute__`` (no RPC).
+    # Two reasons this pre-check exists:
+    #
+    # 1. **Correctness (nested-AsyncResult leak).** For netrefs with
+    #    ``____is_async__ == True``, ``obj(*args)`` goes through
+    #    ``asyncreq`` and returns an ``AsyncResult``, not a coroutine.
+    #    ``inspect.iscoroutine(result)`` is False on ``AsyncResult``,
+    #    so without an explicit await we would ship the un-awaited
+    #    ``AsyncResult`` back over the wire — symptom:
+    #    ``<AsyncResult object (ready) at …> != <expected int>`` in
+    #    ``test_netref_identity_preserved``.
+    #
+    # 2. **Liveness (bidirectional-recursion deadlock).** In
+    #    server↔client recursive async call chains, both peers can end
+    #    up entering ``inspect.iscoroutinefunction(netref_obj)`` at the
+    #    same time. That call reaches into the netref's ``__func__`` /
+    #    ``__code__`` via ``inspect._has_code_flag``, which issues a
+    #    blocking ``syncreq(HANDLE_GETATTR)``. Both peers block in
+    #    ``stream.write`` (mutual TCP flow-control stall) or in
+    #    ``channel.poll`` waiting for a reply the peer can't produce.
+    #    See ``docs/DESIGN_NESTED_ASYNC_RESULT.md`` §5.2 / §6 for the
+    #    stack-snapshot evidence.
+    #
+    # Detection: ``____id_pack__`` is set only on netrefs; its presence
+    # unambiguously identifies one. ``object.__getattribute__`` bypasses
+    # the netref's RPC-based ``__getattribute__``.
+    # ═══════════════════════════════════════════════════════════════════
+    try:
+        object.__getattribute__(obj, "____id_pack__")
+        is_netref = True
+    except (AttributeError, TypeError):
+        is_netref = False
+
+    if is_netref:
+        try:
+            netref_is_async = bool(
+                object.__getattribute__(obj, "____is_async__")
+            )
+        except (AttributeError, TypeError):
+            netref_is_async = False
+
+        if netref_is_async:
+            # Async-flagged netref — call goes through asyncreq and
+            # yields an ``AsyncResult``; awaiting it is event-driven.
+            async_res = obj(*args, **kwargs_dict)
+            return await async_res
+
+        # Sync netref — call via the normal syncreq path. No
+        # ``iscoroutinefunction`` probe (would deadlock — see above).
+        result = obj(*args, **kwargs_dict)
+        if inspect.iscoroutine(result):
+            result = await result
+        return result
+
+    # Not a netref — safe to probe with ``inspect.iscoroutinefunction``.
     try:
         is_coro_func = inspect.iscoroutinefunction(obj)
     except (AttributeError, TypeError):
-        # Failed to inspect (likely netref) - assume sync function
+        # Rare: local object that doesn't expose ``__code__`` cleanly.
         is_coro_func = False
 
     if is_coro_func:
+        # Case 2: real async function.
         coro = obj(*args, **kwargs_dict)
         result = await coro
         return result
 
-    # Case 3: obj is sync function - call normally.
-    #
-    # ═══════════════════════════════════════════════════════════════════
-    # Before calling, try to detect netrefs flagged as async
-    # (``____is_async__ == True``) and route them through Case 2.
-    #
-    # Why: ``inspect.iscoroutinefunction(netref)`` (above) may fail with
-    # ``AttributeError`` because the peer's security policy blocks
-    # ``__func__`` / ``__code__`` access over ``HANDLE_GETATTR``; the
-    # ``try/except`` sets ``is_coro_func = False`` and we fall through
-    # here. For async-flagged netrefs, ``obj(*args)`` would call through
-    # ``asyncreq`` and return an unresolved ``AsyncResult``, not a
-    # coroutine — ``inspect.iscoroutine(result)`` is False — and we
-    # would ship that ``AsyncResult`` back over the wire as the "value".
-    # That is the nested-AsyncResult bug surfaced by
-    # ``test_netref_identity_preserved``.
-    #
-    # The netref carries its own async hint: check it directly. Using
-    # ``object.__getattribute__`` avoids triggering the netref's
-    # RPC-based ``__getattribute__``.
-    # ═══════════════════════════════════════════════════════════════════
-    try:
-        netref_is_async = object.__getattribute__(obj, "____is_async__")
-    except (AttributeError, TypeError):
-        netref_is_async = False
-    if netref_is_async:
-        # Flagged async netref — call and await the resulting AsyncResult
-        # event-driven, exactly as Case 2 would have if inspect worked.
-        # AsyncResult.__await__ goes through loop.create_future + the rpyc
-        # add_reader pump; no polling, no blocking.
-        async_res = obj(*args, **kwargs_dict)
-        return await async_res
-
-    # (This handles sync callbacks passed to async exposed methods)
+    # Case 3: real sync function — sync callbacks passed to async
+    # exposed methods end up here.
     result = obj(*args, **kwargs_dict)
-
-    # If sync function returned coroutine, await it
     if inspect.iscoroutine(result):
         result = await result
-
     return result
 
 

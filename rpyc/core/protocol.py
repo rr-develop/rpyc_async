@@ -1249,28 +1249,68 @@ class Connection(object):
         if type(obj) is tuple:
             return consts.LABEL_TUPLE, tuple(self._box(item) for item in obj)
         elif isinstance(obj, netref.BaseNetref) and obj.____conn__ is self:
-            # Netref points to object in THIS connection
-            # Check if object still exists in _local_objects before using LABEL_LOCAL_REF
+            # Netref's ``____conn__`` is this connection. That means the
+            # netref was created on this side, but it could be EITHER:
+            #
+            #   (a) A LABEL_LOCAL_REF we received from the peer — peer
+            #       said "here's your own object"; we hold the real
+            #       Python object in ``self._local_objects`` under
+            #       ``id_pack``. Sending it back → LABEL_LOCAL_REF so
+            #       peer looks it up in its own ``_local_objects``.
+            #
+            #   (b) A LABEL_REMOTE_REF we received from the peer — peer
+            #       said "here's my object, track it"; the real object
+            #       lives on the peer side, and we hold only a proxy in
+            #       ``self._proxy_cache``. Sending it back → the peer
+            #       needs LABEL_REMOTE_REF with THE SAME id_pack so it
+            #       can resolve from its OWN ``_local_objects``.
+            #
+            # Pre-existing code disambiguated only via
+            # ``id_pack in self._local_objects._dict``. That fails when
+            # two independent processes happen to mint the **same**
+            # ``id_pack`` — the third slot of the triple
+            # ``(name_pack, id(type), seq)`` is a per-connection
+            # monotonic seq starting at ``1 << 40``, and the ``id(type)``
+            # component is identical across CPython processes for
+            # built-in types (``builtins.method``, ``builtins.dict``,
+            # ...). Two peers independently box their Nth built-in-typed
+            # object and mint the **exact same tuple**. Round-tripping
+            # a client netref through server ``_box`` then matches
+            # server's ``_local_objects`` and sends LABEL_LOCAL_REF
+            # instead of LABEL_REMOTE_REF, causing the peer to resolve
+            # to the wrong object — which for async netrefs produces
+            # an infinite ping-pong in recursive bidirectional async
+            # calls (see ``docs/DESIGN_NESTED_ASYNC_RESULT.md`` §5).
+            #
+            # Correct disambiguator: ``_proxy_cache`` is only populated
+            # for netrefs the peer sent us via LABEL_REMOTE_REF. If
+            # ``obj`` is in ``_proxy_cache``, it's a peer-owned proxy
+            # and must go back as LABEL_REMOTE_REF. Checking it first
+            # wins over the ``_local_objects`` collision.
             id_pack = obj.____id_pack__
-            if id_pack in self._local_objects._dict:
-                # Object exists - use LABEL_LOCAL_REF (efficient).
-                # (B disabled temporarily for bisection.)
+            is_peer_proxy = self._proxy_cache.get(id_pack) is obj
+            if is_peer_proxy:
+                # Proxy to a peer-owned object — peer resolves via its
+                # own ``_local_objects``.
+                is_async = getattr(obj, "____is_async__", False)
+                flags = consts.FLAGS_ASYNC if is_async else consts.FLAGS_SYNC
+                return consts.LABEL_REMOTE_REF, (*id_pack, flags)
+            elif id_pack in self._local_objects._dict:
+                # Genuinely our local object — peer looks it up in its
+                # own ``_local_objects`` under ``id_pack``.
                 return consts.LABEL_LOCAL_REF, id_pack
             else:
-                # Object NOT in _local_objects
-                # This can mean:
-                # 1. Object was removed via premature decref (BUG - needs fixing)
-                # 2. This is a PROXY to remote object that was created via LABEL_REMOTE_REF
-                #    (____conn__ points to THIS connection but object lives on REMOTE side)
-                #
-                # In both cases, we should use LABEL_REMOTE_REF to avoid KeyError
+                # Netref points at nothing we know about — slot got
+                # evicted (premature decref) or the netref was
+                # hand-crafted. Fall back to LABEL_REMOTE_REF; the peer
+                # will either find it in its ``_local_objects`` or
+                # raise a clear error.
                 logger = self._config.get("logger")
                 if logger:
                     logger.debug(
-                        f"Netref {id_pack} not in _local_objects. "
-                        f"Using LABEL_REMOTE_REF (proxy to remote object or after decref)."
+                        f"Netref {id_pack} not in _local_objects and not "
+                        f"a known proxy; using LABEL_REMOTE_REF."
                     )
-                # Determine if async or sync
                 is_async = getattr(obj, "____is_async__", False)
                 flags = consts.FLAGS_ASYNC if is_async else consts.FLAGS_SYNC
                 return consts.LABEL_REMOTE_REF, (*id_pack, flags)
@@ -2212,18 +2252,17 @@ class Connection(object):
         """
         Handle netref deletion request.
 
-        NEW (v5.2): Returns acknowledgment with deletion status.
-
-        Args:
-            obj: Object identifier (id_pack tuple)
-            count: Refcount to decrement
-
         Returns:
-            dict: {"deleted": bool, "id_pack": tuple}
+            bool: ``True`` if the object was fully deleted (refcount
+            reached zero), ``False`` otherwise. Must be a ``brine``-
+            dumpable primitive so the caller can truth-test the reply
+            without triggering any additional RPC — the caller is the
+            background cleanup loop and a recursive RPC on the reply
+            value deadlocks under recursive bidirectional async calls
+            (see ``docs/DESIGN_NESTED_ASYNC_RESULT.md`` §2.4).
         """
-        # FIXED (v5.2): obj is already an id_pack tuple, don't call get_id_pack() on it!
-        # Calling get_id_pack() on an id_pack tuple creates a WRONG id_pack for the tuple itself
-        id_pack = obj  # obj IS the id_pack
+        # obj is already an id_pack tuple, don't call get_id_pack() on it.
+        id_pack = obj
         deleted = self._local_objects.decref(id_pack, count)
 
         if deleted:
@@ -2232,10 +2271,7 @@ class Connection(object):
             # scan. See docs/DESIGN_REFCOUNT_RACE_FIX_A.md §3.
             self._forget_stable_obj_id(id_pack)
 
-        return {
-            "deleted": deleted,
-            "id_pack": id_pack
-        }
+        return bool(deleted)
 
     def _handle_repr(self, obj):  # request handler
         return repr(obj)
