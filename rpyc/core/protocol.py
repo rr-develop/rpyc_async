@@ -930,7 +930,16 @@ class Connection(object):
                         )
                     continue
 
-                # Send HANDLE_DEL with acknowledgment
+                # Send HANDLE_DEL with acknowledgment.
+                #
+                # ⚠  The reply MUST be a brine-dumpable primitive  ⚠
+                # (currently ``bool`` — see ``_handle_del`` and
+                # ``docs/DESIGN_BIDIRECTIONAL_ASYNC_FIXES.md`` §3).
+                # If the reply is a netref, the ``if not result:``
+                # below fires a synchronous RPC on this same event
+                # loop and self-deadlocks under recursive async
+                # traffic. Do not change ``_handle_del``'s return
+                # type without re-reading that design doc.
                 result = await self._async_request_with_ack(
                     consts.HANDLE_DEL,
                     id_pack,
@@ -938,6 +947,13 @@ class Connection(object):
                     timeout=self._cleanup_ack_timeout
                 )
 
+                # Local truth-test of a primitive — NO RPC.
+                # ``result`` is either ``False`` (timeout/error path
+                # inside ``_async_request_with_ack``) or a bool from
+                # ``_handle_del``. If it's ever anything else, fix
+                # THAT caller — do not add a ``getattr``/``bool()``
+                # workaround here; the invariant is "reply is a
+                # primitive".
                 if not result:
                     # ═══════════════════════════════════════════════════════════════
                     # CRITICAL: DO NOT REMOVE OR MODIFY THIS LOGGING!
@@ -1249,62 +1265,135 @@ class Connection(object):
         if type(obj) is tuple:
             return consts.LABEL_TUPLE, tuple(self._box(item) for item in obj)
         elif isinstance(obj, netref.BaseNetref) and obj.____conn__ is self:
-            # Netref's ``____conn__`` is this connection. That means the
-            # netref was created on this side, but it could be EITHER:
+            # ═══════════════════════════════════════════════════════════
+            # Netref round-trip boxing — DIRECTION DISAMBIGUATOR.
+            # ═══════════════════════════════════════════════════════════
+            # ⚠  REGRESSION WARNING — DO NOT "SIMPLIFY" THIS BRANCH  ⚠
+            # Post-mortem: ``docs/DESIGN_BIDIRECTIONAL_ASYNC_FIXES.md``.
+            # ═══════════════════════════════════════════════════════════
             #
-            #   (a) A LABEL_LOCAL_REF we received from the peer — peer
-            #       said "here's your own object"; we hold the real
-            #       Python object in ``self._local_objects`` under
-            #       ``id_pack``. Sending it back → LABEL_LOCAL_REF so
-            #       peer looks it up in its own ``_local_objects``.
+            # When ``obj.____conn__ is self``, the netref was created
+            # on THIS side of THIS connection. But that alone doesn't
+            # tell us who OWNS the underlying Python object. Two
+            # scenarios produce such a netref:
             #
-            #   (b) A LABEL_REMOTE_REF we received from the peer — peer
-            #       said "here's my object, track it"; the real object
-            #       lives on the peer side, and we hold only a proxy in
-            #       ``self._proxy_cache``. Sending it back → the peer
-            #       needs LABEL_REMOTE_REF with THE SAME id_pack so it
-            #       can resolve from its OWN ``_local_objects``.
+            #   (a) We received a LABEL_LOCAL_REF from the peer:
+            #       "here's YOUR own object back". In this case the
+            #       real object lives in ``self._local_objects`` and
+            #       ``_unbox`` returned the real object directly (so
+            #       we never actually see ``obj`` as a netref in case
+            #       (a); this branch is unreachable for that path —
+            #       kept as a safety fallback below). Round-tripping
+            #       it back to the peer → LABEL_LOCAL_REF.
             #
-            # Pre-existing code disambiguated only via
-            # ``id_pack in self._local_objects._dict``. That fails when
-            # two independent processes happen to mint the **same**
-            # ``id_pack`` — the third slot of the triple
-            # ``(name_pack, id(type), seq)`` is a per-connection
-            # monotonic seq starting at ``1 << 40``, and the ``id(type)``
-            # component is identical across CPython processes for
-            # built-in types (``builtins.method``, ``builtins.dict``,
-            # ...). Two peers independently box their Nth built-in-typed
-            # object and mint the **exact same tuple**. Round-tripping
-            # a client netref through server ``_box`` then matches
-            # server's ``_local_objects`` and sends LABEL_LOCAL_REF
-            # instead of LABEL_REMOTE_REF, causing the peer to resolve
-            # to the wrong object — which for async netrefs produces
-            # an infinite ping-pong in recursive bidirectional async
-            # calls (see ``docs/DESIGN_NESTED_ASYNC_RESULT.md`` §5).
+            #   (b) We received a LABEL_REMOTE_REF from the peer:
+            #       "here's MY object, track it". ``_unbox`` created a
+            #       proxy, stored it in ``self._proxy_cache[id_pack]``,
+            #       and returned it. The real object lives on the
+            #       peer. Round-tripping it back to the peer → the
+            #       peer needs LABEL_REMOTE_REF with the SAME id_pack
+            #       so the peer can look it up in its own
+            #       ``_local_objects``.
             #
-            # Correct disambiguator: ``_proxy_cache`` is only populated
-            # for netrefs the peer sent us via LABEL_REMOTE_REF. If
-            # ``obj`` is in ``_proxy_cache``, it's a peer-owned proxy
-            # and must go back as LABEL_REMOTE_REF. Checking it first
-            # wins over the ``_local_objects`` collision.
+            # The pre-existing disambiguator
+            # ``if id_pack in self._local_objects._dict`` is
+            # **INSUFFICIENT** because id_pack can collide across two
+            # independent processes:
+            #
+            #   id_pack = (name_pack, id(type(obj)), seq)
+            #
+            #   * ``name_pack`` — module-qualified class name.
+            #     Identical across processes by definition.
+            #   * ``id(type(obj))`` — address of the type object in
+            #     RAM. For built-in types (``builtins.method``,
+            #     ``builtins.dict``, ``builtins.list``, ...) this is
+            #     IDENTICAL across processes because CPython resolves
+            #     built-in type objects to deterministic addresses
+            #     in the executable's data segment. Verified:
+            #       $ python3 -c 'class C: pass
+            #                      print(id(type(C().__init__)))'
+            #       10665440
+            #       $ python3 -c 'class C: pass
+            #                      print(id(type(C().__init__)))'
+            #       10665440      ← same address in both processes
+            #   * ``seq`` — per-connection monotonic counter
+            #     (``itertools.count(1 << 40)``). Each new
+            #     ``Connection`` starts at the SAME origin. Two peers
+            #     both independently allocate seq 1099511627776,
+            #     1099511627777, ... for their Nth boxed object.
+            #
+            # So two independent processes EACH mint
+            # ``('builtins.method', 10665440, 1099511627777)``
+            # for their own 2nd boxed built-in-method-typed object.
+            # These are completely unrelated Python objects, but the
+            # id_pack tuples are bit-identical.
+            #
+            # Concrete failure reproduced in
+            # ``tests/test_e2e_netref_async_callback.py::test_netref_recursive_async_calls``:
+            # server holds a proxy (scenario b) to client's
+            # ``async_chain`` bound method. Server boxes it for
+            # outbound RPC. With the old check
+            # ``id_pack in self._local_objects._dict``: server's own
+            # 2nd-boxed bound method ``exposed_async_chain_calls``
+            # ALSO has id_pack ``('builtins.method', 10665440,
+            # 1099511627777)``, so server mistakenly took the
+            # LABEL_LOCAL_REF branch and told the client "this is
+            # YOUR object". Client looked it up in client's
+            # ``_local_objects`` — found client's own ``async_chain``
+            # under the same colliding id_pack — and dispatched
+            # there. BUT client's entry was correct; the BUG is that
+            # when the call returned through the same path the SERVER
+            # got a LABEL_REMOTE_REF back with the same id_pack,
+            # resolved it against its own colliding slot, fed it to
+            # ``_handle_async_call`` as a netref, which called it
+            # again → peer received yet another LABEL_LOCAL_REF …
+            # infinite ping-pong between peers with identical
+            # ``args`` and ``id_pack``. Stack-snapshot verified; see
+            # design doc §2.2, §2.3.
+            #
+            # THE FIX: ``_proxy_cache`` is populated **exclusively**
+            # by ``_unbox(LABEL_REMOTE_REF)``. If the very ``obj``
+            # object-identity matches what's cached at ``id_pack`` in
+            # ``_proxy_cache``, then ``obj`` is DEFINITIVELY a
+            # peer-owned proxy (scenario b). No collision risk:
+            # ``_proxy_cache`` is keyed AND filtered by the proxy's
+            # own identity (``is obj``), not just the id_pack.
+            #
+            # Priority order (load-bearing, do not reorder):
+            #   1. ``_proxy_cache.get(id_pack) is obj`` → peer proxy,
+            #      send LABEL_REMOTE_REF.
+            #   2. else ``id_pack in self._local_objects._dict`` →
+            #      our own object genuinely, send LABEL_LOCAL_REF.
+            #   3. else → unknown (evicted slot, hand-crafted netref)
+            #      → fall back to LABEL_REMOTE_REF; peer will either
+            #      find it or raise a clear error.
+            #
+            # DO NOT replace the ``_proxy_cache`` check with
+            # ``id_pack in self._proxy_cache``. WeakValueDict keys
+            # can remain after the value was GC'd; the ``is obj``
+            # identity check is what guarantees correctness.
+            # ═══════════════════════════════════════════════════════════
             id_pack = obj.____id_pack__
             is_peer_proxy = self._proxy_cache.get(id_pack) is obj
             if is_peer_proxy:
-                # Proxy to a peer-owned object — peer resolves via its
-                # own ``_local_objects``.
+                # Scenario (b): peer-owned proxy round-tripping back.
+                # Peer resolves the id_pack in ITS ``_local_objects``.
                 is_async = getattr(obj, "____is_async__", False)
                 flags = consts.FLAGS_ASYNC if is_async else consts.FLAGS_SYNC
                 return consts.LABEL_REMOTE_REF, (*id_pack, flags)
             elif id_pack in self._local_objects._dict:
-                # Genuinely our local object — peer looks it up in its
-                # own ``_local_objects`` under ``id_pack``.
+                # Scenario (a): genuinely our local object (rarely
+                # reached because ``_unbox(LABEL_LOCAL_REF)`` returns
+                # the real object, not a netref — but covered for
+                # safety and for pathological hand-crafted netrefs).
                 return consts.LABEL_LOCAL_REF, id_pack
             else:
-                # Netref points at nothing we know about — slot got
-                # evicted (premature decref) or the netref was
-                # hand-crafted. Fall back to LABEL_REMOTE_REF; the peer
-                # will either find it in its ``_local_objects`` or
-                # raise a clear error.
+                # Unknown: the slot was evicted (premature decref
+                # race) or someone constructed a netref manually.
+                # Safer to send LABEL_REMOTE_REF and let the peer
+                # report "id_pack not found" with a clear message
+                # than to send LABEL_LOCAL_REF and silently hit a
+                # collision on the other side.
                 logger = self._config.get("logger")
                 if logger:
                     logger.debug(
@@ -2254,12 +2343,55 @@ class Connection(object):
 
         Returns:
             bool: ``True`` if the object was fully deleted (refcount
-            reached zero), ``False`` otherwise. Must be a ``brine``-
-            dumpable primitive so the caller can truth-test the reply
-            without triggering any additional RPC — the caller is the
-            background cleanup loop and a recursive RPC on the reply
-            value deadlocks under recursive bidirectional async calls
-            (see ``docs/DESIGN_NESTED_ASYNC_RESULT.md`` §2.4).
+            reached zero), ``False`` otherwise.
+
+        ═══════════════════════════════════════════════════════════════
+        ⚠  REGRESSION WARNING — RETURN VALUE MUST BE BRINE-PRIMITIVE  ⚠
+        ═══════════════════════════════════════════════════════════════
+        Post-mortem: ``docs/DESIGN_BIDIRECTIONAL_ASYNC_FIXES.md`` §3
+        (cleanup-loop self-deadlock).
+
+        The return value is sent back over the wire as the reply to
+        ``HANDLE_DEL``. The CALLER is
+        ``_async_request_with_ack`` inside the background
+        ``cleanup_loop`` task, which does:
+
+            result = await self._async_request_with_ack(
+                consts.HANDLE_DEL, id_pack, total_refcount, ...
+            )
+            if not result:
+                # log cleanup failure
+                ...
+
+        If this handler returns anything that is NOT
+        ``brine.dumpable`` (e.g. a ``dict`` or ``list``), the boxing
+        layer will wrap it as ``LABEL_REMOTE_REF`` — i.e. the caller
+        receives a **netref**, not a plain value. Then the innocent-
+        looking ``if not result:`` fires ``bool(netref)`` which
+        triggers a ``HANDLE_CALLATTR('__bool__')`` **synchronous**
+        RPC back to this side — on the SAME event loop that is
+        currently draining another netref deletion and has no room
+        to service its own inbound reply.
+
+        This is the cleanup-loop self-deadlock (stack-snapshot
+        verified, see design doc §3): under recursive bidirectional
+        async traffic, both peers end up parked in
+        ``cleanup_loop → _process_pending_deletions → syncreq →
+        stream.write``, waiting for each other to drain. Nothing
+        moves. Pytest hits its timeout.
+
+        ``bool`` is ``brine.dumpable`` (brine supports primitives:
+        ``int``, ``float``, ``str``, ``bytes``, ``bool``, ``None``,
+        ``tuple``-of-dumpable). The reply goes as ``LABEL_VALUE``,
+        caller receives a plain Python bool, ``if not result:`` is a
+        local C-level check — no RPC, no deadlock.
+
+        DO NOT "enhance" this return type with a dict, a
+        dataclass, or a named tuple. If you need to return multiple
+        values, use a ``tuple`` of primitives (brine-dumpable) OR
+        define a new separate handler. The caller's truth-test MUST
+        remain local.
+        ═══════════════════════════════════════════════════════════════
         """
         # obj is already an id_pack tuple, don't call get_id_pack() on it.
         id_pack = obj
@@ -2271,6 +2403,9 @@ class Connection(object):
             # scan. See docs/DESIGN_REFCOUNT_RACE_FIX_A.md §3.
             self._forget_stable_obj_id(id_pack)
 
+        # Explicit ``bool(...)`` cast to guarantee the return type
+        # stays primitive even if ``RefCountingColl.decref`` ever
+        # evolves to return something truthy-but-non-bool.
         return bool(deleted)
 
     def _handle_repr(self, obj):  # request handler
