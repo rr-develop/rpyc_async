@@ -1,65 +1,68 @@
 """
 Simplified unit tests for Connection asyncio integration.
 
-Tests verify enable/disable_asyncio_serving() methods exist and work.
+These are shape-checks against the Connection class: the wiring
+methods must exist, be callable, and advertise the correct coroutine
+signature where applicable. Behavioural tests for the same methods
+live in `tests/test_connection_asyncio.py` (real AsyncioServer in a
+child process).
+
+Rewrite history
+---------------
+Previous version built Connection on a `unittest.mock.Mock()`
+channel; at interpreter teardown the Mock could not respond to
+`Connection.close() → sync_request(HANDLE_CLOSE)` and every test
+deadlocked. The shape-level assertions have been lifted to operate
+directly on the `Connection` *class*, which removes the need for a
+channel at all.
 """
+import inspect
 import unittest
-from unittest.mock import Mock
+
 from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
 
 
 class TestConnectionAsyncioSimple(unittest.TestCase):
-    """Simplified asyncio integration tests."""
-
-    def setUp(self):
-        """Create mock connection."""
-        service = VoidService()
-        channel = Mock()
-        channel.fileno.return_value = 999
-        channel.poll.return_value = False
-        channel.closed = False
-
-        self.conn = Connection(service, channel)
-        self.conn._cleanup = Mock()  # Prevent real cleanup
-
-    def test_connection_has_asyncio_attributes(self):
-        """Test that Connection has async attributes after init."""
-        self.assertTrue(hasattr(self.conn, '_asyncio_loop'))
-        self.assertTrue(hasattr(self.conn, '_asyncio_enabled'))
-        self.assertTrue(hasattr(self.conn, '_loop_fd_registered'))
-
-        # Check initial values
-        self.assertIsNone(self.conn._asyncio_loop)
-        self.assertFalse(self.conn._asyncio_enabled)
-        self.assertFalse(self.conn._loop_fd_registered)
+    """Shape-level checks on the Connection class."""
 
     def test_has_enable_asyncio_serving_method(self):
-        """Test that enable_asyncio_serving method exists."""
-        self.assertTrue(hasattr(self.conn, 'enable_asyncio_serving'))
-        self.assertTrue(callable(self.conn.enable_asyncio_serving))
+        self.assertTrue(hasattr(Connection, "enable_asyncio_serving"))
+        self.assertTrue(callable(Connection.enable_asyncio_serving))
+        # It's a plain (synchronous) method — serving IS the loop
+        # interaction, not a coroutine. Keep this explicit so an
+        # accidental `async def` on the method would fail this test.
+        self.assertFalse(
+            inspect.iscoroutinefunction(Connection.enable_asyncio_serving),
+            "enable_asyncio_serving must be sync (it interacts with a "
+            "loop via loop.add_reader, not via await)"
+        )
 
     def test_has_disable_asyncio_serving_method(self):
-        """Test that disable_asyncio_serving method exists."""
-        self.assertTrue(hasattr(self.conn, 'disable_asyncio_serving'))
-        self.assertTrue(callable(self.conn.disable_asyncio_serving))
+        self.assertTrue(hasattr(Connection, "disable_asyncio_serving"))
+        self.assertTrue(callable(Connection.disable_asyncio_serving))
+        self.assertFalse(
+            inspect.iscoroutinefunction(Connection.disable_asyncio_serving)
+        )
 
-    def test_disable_asyncio_serving_when_not_enabled(self):
-        """Test disable_asyncio_serving when not enabled is safe."""
-        # Should not raise
-        self.conn.disable_asyncio_serving()
-        self.conn.disable_asyncio_serving()  # Twice
+    def test_has_aclose_coroutine(self):
+        """Connection.aclose must be a coroutine — it's the async close path."""
+        self.assertTrue(hasattr(Connection, "aclose"))
+        self.assertTrue(inspect.iscoroutinefunction(Connection.aclose))
 
-        # Still disabled
-        self.assertFalse(self.conn._asyncio_enabled)
+    def test_has_async_request_with_ack_coroutine(self):
+        """HANDLE_DEL-ack path must be async."""
+        self.assertTrue(hasattr(Connection, "_async_request_with_ack"))
+        self.assertTrue(
+            inspect.iscoroutinefunction(Connection._async_request_with_ack)
+        )
 
-    def test_enable_outside_event_loop_raises(self):
-        """Test enable_asyncio_serving outside event loop raises error."""
-        with self.assertRaises(RuntimeError) as ctx:
-            self.conn.enable_asyncio_serving()
+    def test_has_process_pending_deletions_coroutine(self):
+        """Background cleanup path must be async."""
+        self.assertTrue(hasattr(Connection, "_process_pending_deletions"))
+        self.assertTrue(
+            inspect.iscoroutinefunction(Connection._process_pending_deletions)
+        )
 
-        self.assertIn("event loop", str(ctx.exception).lower())
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

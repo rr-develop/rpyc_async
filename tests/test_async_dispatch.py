@@ -1,159 +1,158 @@
 """
 Unit tests for async dispatch pipeline.
 
-Tests verify async dispatch routing, execution, and reply handling.
+Two layers:
+
+1. Shape checks on the Connection CLASS (no instance required). They
+   fail fast if someone renames/removes `_dispatch_request_async`,
+   `_is_async_handler`, or `_needs_async_dispatch`, or if their
+   sync/async nature flips.
+
+2. Behavioural checks via a real AsyncioServer in a child process
+   (per `docs/DESIGN_NO_SAME_PROCESS_TESTS.md`). They assert the
+   visible consequence of `_dispatch_request_async` — that an
+   `async def exposed_*` round-trips correctly and that exceptions
+   propagate.
+
+Rewrite history
+---------------
+The previous version built a `Connection` on top of a
+`unittest.mock.Mock()` channel and mocked `_send` / `_cleanup`. At
+process teardown Connection's `__del__ → close() →
+sync_request(HANDLE_CLOSE)` could not finish against a Mock and the
+test process deadlocked. Mock-of-the-wire is incompatible with the
+current Connection lifecycle; the assertions are now either
+reflection on the class itself or real-server observations.
 """
-import unittest
 import asyncio
 import inspect
-from unittest.mock import Mock, MagicMock, AsyncMock
+import unittest
+
+import rpyc
 from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
 from rpyc.core import consts
 
+from tests.support import mp_asyncio_server
 
-class TestAsyncDispatch(unittest.TestCase):
-    """Test async dispatch pipeline."""
 
-    def setUp(self):
-        """Create mock connection."""
-        service = VoidService()
-        channel = Mock()
-        channel.fileno.return_value = 999
-        channel.poll.return_value = False
-        channel.closed = False
+# ---------------------------------------------------------------------------
+# Layer 1: class-level shape checks. No Connection instance needed.
+# ---------------------------------------------------------------------------
 
-        self.conn = Connection(service, channel)
-        self.conn._cleanup = Mock()
-        self.conn._send = Mock()
+
+class TestAsyncDispatchShape(unittest.TestCase):
+    """Shape / contract checks on Connection class."""
 
     def test_has_is_async_handler_method(self):
-        """Test that _is_async_handler method exists."""
-        self.assertTrue(hasattr(self.conn, '_is_async_handler'))
-        self.assertTrue(callable(self.conn._is_async_handler))
+        self.assertTrue(hasattr(Connection, "_is_async_handler"))
+        self.assertTrue(callable(Connection._is_async_handler))
 
     def test_has_needs_async_dispatch_method(self):
-        """Test that _needs_async_dispatch method exists."""
-        self.assertTrue(hasattr(self.conn, '_needs_async_dispatch'))
-        self.assertTrue(callable(self.conn._needs_async_dispatch))
+        self.assertTrue(hasattr(Connection, "_needs_async_dispatch"))
+        self.assertTrue(callable(Connection._needs_async_dispatch))
 
-    def test_has_dispatch_request_async_method(self):
-        """Test that _dispatch_request_async method exists."""
-        self.assertTrue(hasattr(self.conn, '_dispatch_request_async'))
-        self.assertTrue(callable(self.conn._dispatch_request_async))
-
-    def test_dispatch_request_async_is_coroutine_function(self):
-        """Test that _dispatch_request_async is async function."""
+    def test_dispatch_request_async_is_coroutine(self):
+        self.assertTrue(hasattr(Connection, "_dispatch_request_async"))
+        self.assertTrue(callable(Connection._dispatch_request_async))
         self.assertTrue(
-            inspect.iscoroutinefunction(self.conn._dispatch_request_async)
+            inspect.iscoroutinefunction(Connection._dispatch_request_async)
         )
 
-    def test_is_async_handler_with_async_call(self):
-        """Test _is_async_handler recognizes HANDLE_ASYNC_CALL."""
-        result = self.conn._is_async_handler(consts.HANDLE_ASYNC_CALL)
-        self.assertTrue(result)
+    def test_handler_registry_contains_async_handlers(self):
+        """The class-level `_request_handlers()` classmethod returns a
+        dict that includes HANDLE_ASYNC_CALL / HANDLE_ASYNC_CALLATTR.
 
-    def test_is_async_handler_with_async_callattr(self):
-        """Test _is_async_handler recognizes HANDLE_ASYNC_CALLATTR."""
-        result = self.conn._is_async_handler(consts.HANDLE_ASYNC_CALLATTR)
-        self.assertTrue(result)
-
-    def test_is_async_handler_with_sync_handler(self):
-        """Test _is_async_handler returns False for sync handlers."""
-        result = self.conn._is_async_handler(consts.HANDLE_CALL)
-        self.assertFalse(result)
-
-    def test_needs_async_dispatch_with_async_request(self):
-        """Test _needs_async_dispatch detects MSG_ASYNC_REQUEST."""
-        result = self.conn._needs_async_dispatch(
-            consts.MSG_ASYNC_REQUEST,
-            (consts.HANDLE_CALL, ())
+        `_HANDLERS` itself is populated per-instance (`protocol.py:189`,
+        `self._HANDLERS = self._request_handlers()`); `_request_handlers()`
+        is the class-level source of truth. No instance / no I/O.
+        """
+        handlers = Connection._request_handlers()
+        self.assertIsInstance(handlers, dict)
+        self.assertIn(consts.HANDLE_ASYNC_CALL, handlers)
+        self.assertIn(consts.HANDLE_ASYNC_CALLATTR, handlers)
+        # Async-call handler must be a coroutine function.
+        self.assertTrue(
+            inspect.iscoroutinefunction(handlers[consts.HANDLE_ASYNC_CALL])
         )
-        self.assertTrue(result)
-
-    def test_needs_async_dispatch_with_async_handler(self):
-        """Test _needs_async_dispatch detects async handler in MSG_REQUEST."""
-        result = self.conn._needs_async_dispatch(
-            consts.MSG_REQUEST,
-            (consts.HANDLE_ASYNC_CALL, ())
-        )
-        self.assertTrue(result)
-
-    def test_needs_async_dispatch_with_sync_request(self):
-        """Test _needs_async_dispatch returns False for sync."""
-        result = self.conn._needs_async_dispatch(
-            consts.MSG_REQUEST,
-            (consts.HANDLE_CALL, ())
-        )
-        self.assertFalse(result)
-
-    def test_dispatch_request_async_execution(self):
-        """Test _dispatch_request_async can execute async handler."""
-        async def test():
-            # Register mock async handler
-            async def mock_handler(conn, *args):
-                await asyncio.sleep(0.001)
-                return "async_result"
-
-            self.conn._HANDLERS[consts.HANDLE_ASYNC_CALL] = mock_handler
-
-            # Execute async dispatch
-            await self.conn._dispatch_request_async(
-                seq=1,
-                raw_args=(consts.HANDLE_ASYNC_CALL, ())
-            )
-
-            # Verify reply was sent
-            self.conn._send.assert_called_once()
-            call_args = self.conn._send.call_args
-            self.assertEqual(call_args[0][0], consts.MSG_ASYNC_REPLY)
-            self.assertEqual(call_args[0][1], 1)  # seq
-
-        asyncio.run(test())
-
-    def test_dispatch_request_async_with_sync_handler(self):
-        """Test _dispatch_request_async works with sync handler too."""
-        async def test():
-            # Register sync handler
-            def sync_handler(conn, *args):
-                return "sync_result"
-
-            self.conn._HANDLERS[999] = sync_handler
-
-            # Execute async dispatch with sync handler
-            await self.conn._dispatch_request_async(
-                seq=2,
-                raw_args=(999, ())
-            )
-
-            # Verify reply was sent
-            self.assertTrue(self.conn._send.called)
-
-        asyncio.run(test())
-
-    def test_dispatch_request_async_exception_handling(self):
-        """Test _dispatch_request_async sends exceptions as MSG_ASYNC_EXCEPTION."""
-        async def test():
-            # Register failing handler
-            async def failing_handler(conn, *args):
-                raise ValueError("test error")
-
-            self.conn._HANDLERS[consts.HANDLE_ASYNC_CALL] = failing_handler
-
-            # Execute async dispatch
-            await self.conn._dispatch_request_async(
-                seq=3,
-                raw_args=(consts.HANDLE_ASYNC_CALL, ())
-            )
-
-            # Verify exception was sent
-            self.conn._send.assert_called_once()
-            call_args = self.conn._send.call_args
-            self.assertEqual(call_args[0][0], consts.MSG_ASYNC_EXCEPTION)
-            self.assertEqual(call_args[0][1], 3)  # seq
-
-        asyncio.run(test())
 
 
-if __name__ == '__main__':
+# ---------------------------------------------------------------------------
+# Layer 2: behavioural end-to-end against a real AsyncioServer.
+# ---------------------------------------------------------------------------
+
+
+class _DispatchService(rpyc.Service):
+    """Service with both sync and async exposed methods, plus a
+    deliberately-raising one for exception-propagation checks."""
+
+    def exposed_sync_echo(self, value):
+        return ("sync", value)
+
+    async def exposed_async_echo(self, value):
+        return ("async", value)
+
+    async def exposed_async_raises(self):
+        raise ValueError("deliberate")
+
+
+class TestAsyncDispatchE2E(unittest.TestCase):
+    """Async dispatch behavioural round-trip (client-server in
+    different processes)."""
+
+    @staticmethod
+    def _run(coro):
+        return asyncio.run(coro)
+
+    def test_async_def_method_round_trips(self):
+        """An `async def exposed_*` round-trips and returns the value."""
+        async def body():
+            with mp_asyncio_server(_DispatchService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    result = await conn.root.async_echo("hello")
+                    # result is a netref-tuple; compare its pieces
+                    # through async_()-wrapped indexing OR unpack via
+                    # a round-trip serialize. Simplest: stringify.
+                    self.assertEqual(
+                        tuple(await conn.root.async_echo("hello")),
+                        ("async", "hello"),
+                    )
+                    _ = result
+                finally:
+                    await conn.aclose()
+
+        self._run(body())
+
+    def test_sync_def_method_round_trips(self):
+        """A plain sync `exposed_*` method also round-trips via
+        rpyc.async_() on the netref attribute."""
+        async def body():
+            with mp_asyncio_server(_DispatchService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    sync_echo = rpyc.async_(conn.root.sync_echo)
+                    result = await sync_echo("hi")
+                    self.assertEqual(tuple(result), ("sync", "hi"))
+                finally:
+                    await conn.aclose()
+
+        self._run(body())
+
+    def test_async_def_exception_propagates(self):
+        """An exception in an `async def exposed_*` propagates to
+        the client through the async-reply path."""
+        async def body():
+            with mp_asyncio_server(_DispatchService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    with self.assertRaises(ValueError) as ctx:
+                        await conn.root.async_raises()
+                    self.assertIn("deliberate", str(ctx.exception))
+                finally:
+                    await conn.aclose()
+
+        self._run(body())
+
+
+if __name__ == "__main__":
     unittest.main()

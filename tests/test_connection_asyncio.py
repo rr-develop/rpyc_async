@@ -1,148 +1,182 @@
 """
 Unit tests for Connection asyncio integration.
 
-Tests verify enable/disable_asyncio_serving(), FD registration,
-and event loop integration.
+Tests verify enable/disable_asyncio_serving(), FD registration, and
+event loop integration — against a real Connection instance obtained
+via `async_connect` to an `AsyncioServer` running in a child process
+(per `docs/DESIGN_NO_SAME_PROCESS_TESTS.md`).
+
+Rewrite history
+---------------
+This file previously built a `Connection` on top of
+`unittest.mock.Mock()` channel. At interpreter teardown the Mock
+channel could not answer `Connection.__del__ → close() →
+sync_request(HANDLE_CLOSE)` and every test deadlocked. The Mock-based
+shortcut is not compatible with the current Connection lifecycle, so
+each test now connects to a real AsyncioServer in a separate process
+(the project's canonical test topology via `mp_asyncio_server`).
 """
-import unittest
 import asyncio
-from unittest.mock import Mock, MagicMock, patch
+import unittest
+
+import rpyc
 from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+
+from tests.support import mp_asyncio_server
+
+
+class _QuietService(rpyc.Service):
+    """Minimal service — all we need is a live RPyC endpoint."""
 
 
 class TestConnectionAsyncio(unittest.TestCase):
-    """Test Connection asyncio integration."""
+    """Test Connection asyncio integration (real channel, child-proc server)."""
 
-    def _create_mock_connection(self):
-        """Create a mock connection for testing."""
-        service = VoidService()
-        channel = Mock()
-        channel.fileno.return_value = 999  # Fake FD
-        channel.poll.return_value = False  # No data
-        channel.closed = False
-
-        conn = Connection(service, channel)
-        # Patch close to avoid HANDLE_CLOSE request
-        conn._cleanup = Mock()
-        conn._send = Mock()
-        return conn, channel
+    @staticmethod
+    def _run(coro):
+        return asyncio.run(coro)
 
     def test_connection_has_asyncio_attributes(self):
-        """Test that Connection has async-related attributes after init."""
-        conn, _ = self._create_mock_connection()
+        """After init, Connection exposes its asyncio wiring attributes."""
+        async def body():
+            with mp_asyncio_server(_QuietService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    self.assertTrue(hasattr(conn, "_asyncio_loop"))
+                    self.assertTrue(hasattr(conn, "_asyncio_enabled"))
+                    self.assertTrue(hasattr(conn, "_loop_fd_registered"))
+                    # async_connect auto-enables asyncio serving (see
+                    # rpyc/core/async_connect.py commit 41b062e). So by
+                    # the time we can `await` on conn, it IS enabled —
+                    # this is the supported state.
+                    self.assertTrue(conn._asyncio_enabled)
+                    self.assertIs(conn._asyncio_loop, asyncio.get_running_loop())
+                    self.assertTrue(conn._loop_fd_registered)
+                finally:
+                    await conn.aclose()
 
-        # Check new attributes exist
-        self.assertTrue(hasattr(conn, '_asyncio_loop'))
-        self.assertTrue(hasattr(conn, '_asyncio_enabled'))
-        self.assertTrue(hasattr(conn, '_loop_fd_registered'))
+        self._run(body())
 
-        # Check initial values
-        self.assertIsNone(conn._asyncio_loop)
-        self.assertFalse(conn._asyncio_enabled)
-        self.assertFalse(conn._loop_fd_registered)
+    def test_enable_asyncio_serving_is_idempotent(self):
+        """Calling enable_asyncio_serving() a second time is a no-op."""
+        async def body():
+            with mp_asyncio_server(_QuietService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Already enabled by async_connect.
+                    self.assertTrue(conn._asyncio_enabled)
+                    # Second call must not raise and must not re-register.
+                    conn.enable_asyncio_serving(loop)
+                    self.assertTrue(conn._asyncio_enabled)
+                    self.assertIs(conn._asyncio_loop, loop)
+                finally:
+                    await conn.aclose()
 
-    def test_enable_asyncio_serving_with_running_loop(self):
-        """Test enable_asyncio_serving() with running event loop."""
-        async def test():
-            conn, _ = self._create_mock_connection()
+        self._run(body())
 
-            # Get running loop
-            loop = asyncio.get_running_loop()
+    def test_enable_asyncio_serving_autodetects_loop(self):
+        """enable_asyncio_serving() without loop= detects the running one."""
+        async def body():
+            with mp_asyncio_server(_QuietService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    # Re-invoking is idempotent, and with loop=None it
+                    # must detect the currently-running loop.
+                    # First disable so we exercise the enable path on a
+                    # real, live Connection.
+                    conn.disable_asyncio_serving()
+                    self.assertFalse(conn._asyncio_enabled)
+                    conn.enable_asyncio_serving()  # no explicit loop
+                    self.assertTrue(conn._asyncio_enabled)
+                    self.assertIs(conn._asyncio_loop, asyncio.get_running_loop())
+                finally:
+                    await conn.aclose()
 
-            # Enable asyncio serving
-            conn.enable_asyncio_serving(loop)
+        self._run(body())
 
-            # Verify state
-            self.assertTrue(conn._asyncio_enabled)
-            self.assertIs(conn._asyncio_loop, loop)
-            self.assertTrue(conn._loop_fd_registered)
+    def test_disable_asyncio_serving_resets_state(self):
+        """disable_asyncio_serving() drops the FD registration and flags."""
+        async def body():
+            with mp_asyncio_server(_QuietService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    self.assertTrue(conn._asyncio_enabled)
+                    conn.disable_asyncio_serving()
+                    self.assertFalse(conn._asyncio_enabled)
+                    self.assertIsNone(conn._asyncio_loop)
+                    self.assertFalse(conn._loop_fd_registered)
+                finally:
+                    # Re-enable before aclose so the final drain can
+                    # send HANDLE_CLOSE over the live loop.
+                    conn.enable_asyncio_serving()
+                    await conn.aclose()
 
-        asyncio.run(test())
+        self._run(body())
 
-    def test_enable_asyncio_serving_without_loop(self):
-        """Test enable_asyncio_serving() detects running loop automatically."""
-        async def test():
-            conn, _ = self._create_mock_connection()
+    def test_disable_asyncio_serving_is_idempotent(self):
+        """Calling disable_asyncio_serving() twice is safe."""
+        async def body():
+            with mp_asyncio_server(_QuietService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    conn.disable_asyncio_serving()
+                    conn.disable_asyncio_serving()  # no-op on second call
+                    self.assertFalse(conn._asyncio_enabled)
+                finally:
+                    conn.enable_asyncio_serving()
+                    await conn.aclose()
 
-            # Enable without explicit loop (should detect)
-            conn.enable_asyncio_serving()
-
-            # Should auto-detect running loop
-            self.assertTrue(conn._asyncio_enabled)
-            self.assertIsNotNone(conn._asyncio_loop)
-
-        asyncio.run(test())
+        self._run(body())
 
     def test_enable_asyncio_serving_outside_loop_fails(self):
-        """Test enable_asyncio_serving() outside event loop raises error."""
-        conn, _ = self._create_mock_connection()
+        """enable_asyncio_serving() outside a running loop raises RuntimeError.
 
-        # Try to enable outside event loop (should fail)
-        with self.assertRaises(RuntimeError) as ctx:
-            conn.enable_asyncio_serving()
-
-        self.assertIn("running event loop", str(ctx.exception).lower())
-
-    def test_enable_asyncio_serving_idempotent(self):
-        """Test that calling enable_asyncio_serving() twice is safe."""
-        async def test():
-            conn, _ = self._create_mock_connection()
-            loop = asyncio.get_running_loop()
-
-            # Enable twice
-            conn.enable_asyncio_serving(loop)
-            conn.enable_asyncio_serving(loop)  # Should not raise
-
-            # Still enabled once
-            self.assertTrue(conn._asyncio_enabled)
-
-        asyncio.run(test())
-
-    def test_disable_asyncio_serving(self):
-        """Test disable_asyncio_serving() cleanup."""
-        async def test():
-            conn, _ = self._create_mock_connection()
-            loop = asyncio.get_running_loop()
-
-            # Enable then disable
-            conn.enable_asyncio_serving(loop)
-            self.assertTrue(conn._asyncio_enabled)
-
-            conn.disable_asyncio_serving()
-
-            # Should be disabled
-            self.assertFalse(conn._asyncio_enabled)
-            self.assertIsNone(conn._asyncio_loop)
-            self.assertFalse(conn._loop_fd_registered)
-
-        asyncio.run(test())
-
-    def test_disable_asyncio_serving_idempotent(self):
-        """Test that calling disable_asyncio_serving() when disabled is safe."""
-        conn, _ = self._create_mock_connection()
-
-        # Disable when not enabled (should not raise)
-        conn.disable_asyncio_serving()
-        conn.disable_asyncio_serving()
+        This is a pure code-path contract: the call has to refuse to
+        operate when `asyncio.get_running_loop()` would fail and no
+        loop was passed in. The Connection-object shape for this check
+        doesn't matter — we only need *some* Connection. We obtain one
+        via a real connect/disable cycle so Connection.close() at exit
+        still has a valid channel to talk to.
+        """
+        # Note: this entire body runs OUTSIDE of asyncio.run() — the
+        # point is exactly to have no running loop.
+        with mp_asyncio_server(_QuietService) as port:
+            conn = asyncio.run(rpyc.async_connect("127.0.0.1", port))
+            try:
+                # Take the conn offline from its previous loop so a
+                # fresh enable_asyncio_serving() in this no-loop scope
+                # is a real test.
+                conn.disable_asyncio_serving()
+                with self.assertRaises(RuntimeError) as ctx:
+                    conn.enable_asyncio_serving()
+                self.assertIn("event loop", str(ctx.exception).lower())
+            finally:
+                # aclose() needs a loop; run it in a fresh one.
+                async def _close():
+                    conn.enable_asyncio_serving()
+                    await conn.aclose()
+                asyncio.run(_close())
 
     def test_close_cleans_up_asyncio(self):
-        """Test that close() properly cleans up asyncio resources."""
-        async def test():
-            conn, _ = self._create_mock_connection()
-            loop = asyncio.get_running_loop()
-            conn.enable_asyncio_serving(loop)
+        """aclose() must leave _asyncio_enabled and fd registration cleared."""
+        async def body():
+            with mp_asyncio_server(_QuietService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                self.assertTrue(conn._asyncio_enabled)
+                await conn.aclose()
+                self.assertFalse(conn._asyncio_enabled)
+                self.assertFalse(conn._loop_fd_registered)
 
-            # Close should cleanup asyncio
-            conn._closed = True  # Prevent HANDLE_CLOSE
-            conn.disable_asyncio_serving()  # Manual cleanup
+        self._run(body())
 
-            # Asyncio should be disabled
-            self.assertFalse(conn._asyncio_enabled)
-            self.assertFalse(conn._loop_fd_registered)
+    def test_connection_class_exposes_wiring_methods(self):
+        """Pure shape-check on the class — no Connection instance needed."""
+        self.assertTrue(callable(getattr(Connection, "enable_asyncio_serving", None)))
+        self.assertTrue(callable(getattr(Connection, "disable_asyncio_serving", None)))
+        self.assertTrue(callable(getattr(Connection, "close", None)))
+        self.assertTrue(callable(getattr(Connection, "aclose", None)))
 
-        asyncio.run(test())
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

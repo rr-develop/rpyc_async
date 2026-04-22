@@ -1,184 +1,130 @@
 """
-Simplified cleanup test with extensive print statements
+Single-object cleanup verification.
+
+Server returns a dict (which boxes as a netref on the client side).
+We drop the reference, yield once to let the event-driven
+`cleanup_loop` drain, and then assert both registries are empty and
+no pending deletions remain. Server and client live in separate
+processes per `docs/DESIGN_NO_SAME_PROCESS_TESTS.md`.
+
+Rewrite history
+---------------
+The previous version used `rpyc.connect(...) + enable_asyncio_serving()`
+and then sync netref ops (`conn.root.get_stats()`, `result[...]`)
+from inside the asyncio loop — blocked by the sync_request guard in
+`protocol.py:2129`. It also only *printed* warnings instead of
+asserting. The rewrite uses `await rpyc.async_connect(...)`, calls
+only async exposed methods (or wraps sync ones in `rpyc.async_()`),
+and converts every trace printout into a real assertion.
 """
-import unittest
 import asyncio
-import time
 import gc
+import unittest
+
 import rpyc
 from rpyc.utils.async_server import AsyncioServer
-from multiprocessing import Process, Queue
-from tests.support import get_free_port
+
+from tests.support import mp_asyncio_server
 
 
-def run_simple_server(port, ready_queue):
-    """Simple server"""
+class _CleanupTraceService(rpyc.Service):
+    """Minimal service: returns one dict per call + a getter for
+    server-side `_local_objects` size."""
 
-    class SimpleService(rpyc.Service):
-        def __init__(self):
-            super().__init__()
-            self._conn = None
+    def on_connect(self, conn):
+        # Capture the serving connection so we can introspect its
+        # registry from within exposed methods.
+        self._conn = conn
 
-        def on_connect(self, conn):
-            self._conn = conn
-            print(f"[SERVER] Connection established")
+    async def exposed_create_dict(self):
+        """Return a fresh dict. It will be boxed as a netref on the
+        client side, and entered into this server's `_local_objects`."""
+        return {"value": 42, "data": "test"}
 
-        async def exposed_create_dict(self):
-            """Create a simple dict"""
-            result = {"value": 42, "data": "test"}
-            print(f"[SERVER] Created dict: {result}")
-            return result
-
-        def exposed_get_stats(self):
-            """Get server stats"""
-            return {
-                "registry_size": len(self._conn._local_objects._dict),
-                "cleanup_running": self._conn._cleanup_running,
-                "pending_queue": self._conn._pending_deletions.qsize(),
-            }
-
-    async def server_main():
-        server = AsyncioServer(
-            SimpleService,
-            port=port,
-            protocol_config={
-                "allow_public_attrs": True,
-                "cleanup_interval": 0.5,  # Fast cleanup
-            }
+    async def exposed_stats_tuple(self):
+        """Introspect the server-side Connection state as a brine-
+        dumpable tuple of primitives — avoids boxing a dict netref
+        that the client would have to dereference field-by-field via
+        sync RPCs."""
+        return (
+            int(len(self._conn._local_objects._dict)),
+            int(self._conn._pending_deletions.qsize()),
+            bool(self._conn._cleanup_running),
         )
-
-        try:
-            await server.start()
-            ready_queue.put("ready")
-            print(f"[SERVER] Server started on port {port}")
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            await server.close()
-
-    try:
-        asyncio.run(server_main())
-    except KeyboardInterrupt:
-        pass
 
 
 class TestCleanupSimpleTrace(unittest.TestCase):
-    def setUp(self):
-        self.port = get_free_port()
-        self.ready_queue = Queue()
-        self.server_process = Process(
-            target=run_simple_server,
-            args=(self.port, self.ready_queue),
-            daemon=True
-        )
-        self.server_process.start()
+    """Verify one-object round-trip cleanup is clean on both sides."""
 
-        try:
-            signal = self.ready_queue.get(timeout=5.0)
-            if signal != "ready":
-                raise RuntimeError(f"Unexpected signal: {signal}")
-        except Exception as e:
-            self.server_process.terminate()
-            raise RuntimeError(f"Server failed to start: {e}")
+    def test_single_object_cleanup_is_clean(self):
+        async def body():
+            with mp_asyncio_server(_CleanupTraceService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    # Client-side cleanup task must be running —
+                    # async_connect enabled asyncio serving.
+                    self.assertTrue(conn._cleanup_running)
+                    self.assertIsNotNone(conn._cleanup_task)
 
-        time.sleep(0.2)
+                    # Server: idle state.
+                    local_before, pending_before, running_before = \
+                        await conn.root.stats_tuple()
+                    self.assertTrue(running_before)
+                    self.assertEqual(pending_before, 0)
 
-    def tearDown(self):
-        if self.server_process.is_alive():
-            self.server_process.terminate()
-            self.server_process.join(timeout=2.0)
+                    # Create a server-owned dict, receive it as a netref.
+                    result = await conn.root.create_dict()
+                    self.assertIsNotNone(result)
 
-        if self.server_process.is_alive():
-            self.server_process.kill()
-            self.server_process.join(timeout=1.0)
+                    # Server now holds the dict strongly in its
+                    # _local_objects; the client holds a netref.
+                    local_held, pending_held, _ = \
+                        await conn.root.stats_tuple()
+                    self.assertGreaterEqual(
+                        local_held, 1,
+                        "server must hold at least the returned dict"
+                    )
 
-    def test_single_object_cleanup_trace(self):
-        """Trace cleanup of a single object"""
-
-        async def test():
-            print("\n" + "="*70)
-            print("TEST: Single Object Cleanup Trace")
-            print("="*70)
-
-            conn = rpyc.connect("localhost", self.port)
-
-            try:
-                loop = asyncio.get_running_loop()
-                conn.enable_asyncio_serving(loop=loop)
-
-                print(f"\n[CLIENT] Connected")
-                print(f"[CLIENT] Cleanup running: {conn._cleanup_running}")
-                print(f"[CLIENT] Cleanup task exists: {conn._cleanup_task is not None}")
-                print(f"[CLIENT] Cleanup interval: {conn._cleanup_interval}s")
-
-                # Get server stats
-                server_stats = conn.root.get_stats()
-                print(f"\n[SERVER] Stats: {server_stats}")
-
-                print("\n--- Phase 1: Create object ---")
-                result = await conn.root.create_dict()
-                print(f"[CLIENT] Received: {result}")
-
-                # Check queue
-                print(f"\n[CLIENT] Pending deletions: {conn._pending_deletions.qsize()}")
-
-                # Check registries
-                client_reg = len(conn._local_objects._dict)
-                server_stats = conn.root.get_stats()
-                print(f"[CLIENT] Registry size: {client_reg}")
-                print(f"[SERVER] Registry size: {server_stats['registry_size']}")
-
-                print("\n--- Phase 2: Delete reference ---")
-                del result
-                gc.collect()
-
-                # Check queue immediately after deletion
-                print(f"[CLIENT] Pending deletions (after del): {conn._pending_deletions.qsize()}")
-
-                print("\n--- Phase 3: Wait for cleanup (3 seconds) ---")
-                # Force GC multiple times
-                for i in range(3):
+                    # Drop the reference; the netref __del__ queues a
+                    # HANDLE_DEL and wakes the event-driven cleanup_loop.
+                    del result
                     gc.collect()
-                    await asyncio.sleep(1.0)
-                    print(f"[CLIENT] After {i+1}s: pending={conn._pending_deletions.qsize()}")
 
-                # Final GC
-                gc.collect()
+                    # Yield once so cleanup_loop can pick up the signal
+                    # and drain its queue — NO polling.
+                    await asyncio.sleep(0.3)
 
-                # Check queue after cleanup
-                print(f"[CLIENT] Pending deletions (final): {conn._pending_deletions.qsize()}")
+                    # Client side: registry empty (we never owned
+                    # server-side objects), queue drained.
+                    self.assertEqual(
+                        len(conn._local_objects._dict), 0,
+                        "client _local_objects must be empty — it never "
+                        "hosts server-owned objects"
+                    )
+                    self.assertEqual(
+                        conn._pending_deletions.qsize(), 0,
+                        "client pending_deletions must have drained after "
+                        "one event-loop yield"
+                    )
 
-                # Check registries after cleanup
-                client_reg_after = len(conn._local_objects._dict)
-                server_stats_after = conn.root.get_stats()
-                print(f"[CLIENT] Registry size (after): {client_reg_after}")
-                print(f"[SERVER] Registry size (after): {server_stats_after['registry_size']}")
-                print(f"[SERVER] Pending queue (after): {server_stats_after['pending_queue']}")
+                    # Server side: dict netref released → refcount hit 0
+                    # → slot removed from _local_objects.
+                    local_after, pending_after, _ = \
+                        await conn.root.stats_tuple()
+                    self.assertEqual(
+                        pending_after, 0,
+                        "server pending_deletions must be 0 after cleanup"
+                    )
+                    self.assertLess(
+                        local_after, local_held,
+                        "server _local_objects_count must have decreased "
+                        "after the netref was dropped"
+                    )
+                finally:
+                    await conn.aclose()
 
-                print("\n--- Analysis ---")
-                if conn._pending_deletions.qsize() > 0:
-                    print(f"⚠️  WARNING: Client still has {conn._pending_deletions.qsize()} pending deletions!")
-                    print("   This means cleanup task is NOT processing the queue!")
-
-                if server_stats_after['pending_queue'] > 0:
-                    print(f"⚠️  WARNING: Server still has {server_stats_after['pending_queue']} pending deletions!")
-
-                if client_reg == client_reg_after:
-                    print(f"✓ Client registry unchanged: {client_reg} (expected - no local objects)")
-
-                if server_stats['registry_size'] == server_stats_after['registry_size']:
-                    print(f"⚠️  WARNING: Server registry unchanged: {server_stats['registry_size']} -> {server_stats_after['registry_size']}")
-                    print("   Objects not being cleaned up!")
-                else:
-                    print(f"✓ Server registry changed: {server_stats['registry_size']} -> {server_stats_after['registry_size']}")
-
-            finally:
-                conn.disable_asyncio_serving()
-                conn.close()
-
-        asyncio.run(test())
+        asyncio.run(body())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

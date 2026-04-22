@@ -1,110 +1,106 @@
 """
-DIRECT REPRODUCER: Demonstrate KeyError in _unbox() when object missing from _local_objects.
+Verify the `_unbox(LABEL_LOCAL_REF)` contract when the referenced
+object is missing from `_local_objects`.
 
-This test proves the bug exists by directly manipulating _local_objects.
+Rewrite history
+---------------
+Original test built a `Connection` on top of a raw
+`socket.socketpair()` + `Channel(client_sock)`. That low-level path
+was incompatible with the current `Channel.send` contract (streams
+must expose `MAX_IO_CHUNK`; raw sockets do not). The original test
+also asserted the OLD contract — a bare `KeyError` — by calling
+`pytest.fail(...)` if KeyError was NOT raised. The CURRENT contract
+(`protocol.py:1446-1472`) is different and better:
+
+  * missing LABEL_LOCAL_REF → `ValueError` with structured message,
+    `.from None` to suppress the internal KeyError,
+  * stderr `logger.error(...)` with id_pack diagnostics.
+
+This rewrite exercises the new contract end-to-end via an
+AsyncioServer in a child process (per
+`docs/DESIGN_NO_SAME_PROCESS_TESTS.md`). To cause the "missing"
+condition we evict the server-side `_local_objects` slot by hand
+immediately before the next sync_request that re-dereferences the
+same LABEL_LOCAL_REF. A helper method on the service performs both
+the eviction and the re-dereference in the same request so the race
+is deterministic.
 """
-import pytest
-import socket
+import asyncio
+import unittest
 
 import rpyc
-from rpyc.core import consts
-from rpyc.core.protocol import Connection
-from rpyc.core.channel import Channel
-from rpyc.lib import get_id_pack
+
+from tests.support import mp_asyncio_server
 
 
-def test_keyerror_when_object_removed_from_local_objects():
-    """
-    CRITICAL BUG REPRODUCER: KeyError in _unbox() when object is missing.
+class _EvictingService(rpyc.Service):
 
-    This test demonstrates that _unbox() will raise KeyError if:
-    1. Package has LABEL_LOCAL_REF
-    2. Object ID is not in _local_objects
+    def on_connect(self, conn):
+        self._conn = conn
 
-    This is exactly what happens in production when decref removes an object
-    while it's still being used in async calls.
-    """
-    # Create a test object
-    class ClientData:
-        def __init__(self, value):
-            self.value = value
+    async def exposed_make_handle(self):
+        """Return a dict (becomes a server-side _local_objects entry,
+        with the client holding a netref to it). We cache the id_pack
+        so the next call can evict deterministically."""
+        obj = {"payload": "evict-me"}
+        # Build the id_pack the same way `_box` would — use the
+        # stable-seq allocator.
+        self._stashed_id_pack = self._conn._stable_id_pack(obj)
+        # Also register it in _local_objects so the eviction is
+        # visible as a slot removal (mirrors what `_box` does when
+        # the return value is boxed).
+        self._conn._local_objects.add(self._stashed_id_pack, obj)
+        return obj
 
-    obj = ClientData("test123")
+    async def exposed_evict_and_unbox(self):
+        """Evict the stashed id_pack from `_local_objects` and then
+        re-build a LABEL_LOCAL_REF package with that id_pack and feed
+        it back to `_unbox`. Under the current contract this must
+        raise `ValueError` with a structured message mentioning the
+        phrase `_local_objects`.
 
-    # Create a minimal Connection for testing
-    server_sock, client_sock = socket.socketpair()
-    chan = Channel(client_sock)
-    config = {"allow_public_attrs": True}
-    conn = Connection(rpyc.SlaveService, chan, config=config)
+        Return the outcome as a brine-primitive tuple so the client
+        can assert without any further netref dereferencing.
+        """
+        from rpyc.core import consts
 
-    try:
-        # Get object ID
-        id_pack = get_id_pack(obj)
-        print(f"\n[TEST] Object ID: {id_pack}")
+        id_pack = self._stashed_id_pack
+        if id_pack in self._conn._local_objects._dict:
+            del self._conn._local_objects._dict[id_pack]
 
-        # Add object to _local_objects
-        conn._local_objects.add(id_pack, obj)
-        print(f"[TEST] ✓ Object added to _local_objects")
-
-        # Verify it's there
-        assert id_pack in conn._local_objects._dict
-        print(f"[TEST] ✓ Object found in _local_objects")
-
-        # Create package with LABEL_LOCAL_REF (this is what RPyC does internally)
-        package = (consts.LABEL_LOCAL_REF, id_pack)
-
-        # This SHOULD work (object is in _local_objects)
-        result = conn._unbox(package)
-        assert result is obj
-        print(f"[TEST] ✓ _unbox() works when object is present")
-
-        # Now REMOVE the object (this is what decref does)
-        conn._local_objects.decref(id_pack, count=1)
-        print(f"[TEST] ✓ Object removed via decref")
-
-        # Verify it's gone
-        assert id_pack not in conn._local_objects._dict
-        print(f"[TEST] ✓ Object no longer in _local_objects")
-
-        # Now try to unbox the SAME package again
-        # BUG: This will raise KeyError!
-        print(f"[TEST] Attempting _unbox() after object removed...")
-
+        pkg = (consts.LABEL_LOCAL_REF, id_pack)
         try:
-            result = conn._unbox(package)
-            print(f"[TEST] ✗ UNEXPECTED: No KeyError (result: {result})")
-            pytest.fail("Expected KeyError was NOT raised!")
+            self._conn._unbox(pkg)
+            return ("unexpected-success", "")
+        except ValueError as exc:
+            return ("raised-ValueError", str(exc))
+        except KeyError as exc:
+            return ("raised-KeyError-legacy", repr(exc))
 
-        except KeyError as e:
-            print(f"[TEST] ✓✗ KeyError REPRODUCED: {e}")
-            print(f"\n{'='*70}")
-            print(f"BUG CONFIRMED!")
-            print(f"{'='*70}")
-            print(f"Location: rpyc/core/protocol.py:486 in _unbox()")
-            print(f"Issue: Direct dict access without error handling")
-            print(f"Code: return self._local_objects[value]")
-            print(f"Error: {e}")
-            print(f"{'='*70}\n")
 
-            # This demonstrates the bug!
-            # In production, this happens when:
-            # 1. Netref object is passed to callback
-            # 2. Decref is called (object removed from _local_objects)
-            # 3. Callback tries to use the object
-            # 4. _unbox() fails with KeyError!
+class TestUnboxMissingLocalRef(unittest.TestCase):
 
-            pytest.fail(
-                f"✗ BUG REPRODUCED!\n"
-                f"KeyError in _unbox() when LABEL_LOCAL_REF points to missing object.\n"
-                f"This happens in production when callbacks receive objects that were\n"
-                f"prematurely removed from _local_objects due to decref.\n\n"
-                f"Error: {e}"
-            )
+    def test_missing_local_ref_raises_structured_valueerror(self):
+        async def body():
+            with mp_asyncio_server(_EvictingService) as port:
+                conn = await rpyc.async_connect("127.0.0.1", port)
+                try:
+                    _ = await conn.root.make_handle()
+                    outcome, detail = await conn.root.evict_and_unbox()
+                    self.assertEqual(
+                        outcome, "raised-ValueError",
+                        f"expected ValueError contract, got "
+                        f"{outcome!r} (detail: {detail!r})"
+                    )
+                    # Message must mention the locality and the
+                    # missing-object framing so production logs can
+                    # be grepped.
+                    self.assertIn("_local_objects", detail)
+                finally:
+                    await conn.aclose()
 
-    finally:
-        server_sock.close()
-        client_sock.close()
+        asyncio.run(body())
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-xvs"])
+    unittest.main()

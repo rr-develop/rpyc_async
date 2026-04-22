@@ -8,6 +8,39 @@ import time
 import unittest
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LEGACY TEST — skipped under current project policies.
+#
+# This file exercises an AsyncResult race in the *sync* ThreadedServer
+# pathway via `rpyc.classic.connect_thread()`, which puts the server and
+# the client in the SAME process. That topology is forbidden by
+# `docs/DESIGN_NO_SAME_PROCESS_TESTS.md` and enforced by
+# `tests/test_no_same_process_server_client.py` — AsyncioServer and
+# rpyc clients MUST live in different processes (see
+# `tests/support.py::mp_asyncio_server`).
+#
+# The race this tries to reproduce (KeyboardInterrupt during
+# AsyncResult.wait() on a ThreadedServer serve_all loop) has no
+# analogue in the event-driven AsyncioServer code path. Current
+# bidirectional-async race coverage is in
+# `tests/test_critical_bidirectional_async.py` and
+# `tests/test_e2e_recursive_async.py`.
+# ═══════════════════════════════════════════════════════════════════════════
+@unittest.skip(
+    "Legacy — CANNOT be ported to the AsyncioServer topology. "
+    "The race under test is a signal/thread interaction specific to "
+    "the synchronous ThreadedServer `serve_all` loop: `AsyncResult.wait()` "
+    "calls `conn.serve()` on a dedicated thread, and a SIGINT "
+    "delivered to that thread must NOT raise KeyboardInterrupt back "
+    "to the caller. There is no analogous code path under "
+    "AsyncioServer — event-loop wait uses `asyncio.Event.wait()` and "
+    "signal handling goes through `loop.add_signal_handler()`, which "
+    "do not exhibit this race. Re-implementing the test under the "
+    "supported topology would be testing a different bug. Current "
+    "bidirectional-async race coverage: "
+    "tests/test_critical_bidirectional_async.py, "
+    "tests/test_e2e_recursive_async.py."
+)
 class TestRace(unittest.TestCase):
     def setUp(self):
         self.connection = rpyc.classic.connect_thread()
