@@ -341,27 +341,17 @@ def _server(listener, remote_service, remote_config, args=None):
         interrupt_main()
 
 
-def connect_thread(service=VoidService, config={}, remote_service=VoidService, remote_config={}):
-    """starts an rpyc server on a new thread, bound to an arbitrary port,
-    and connects to it over a socket.
-
-    :param service: the local service to expose (defaults to Void)
-    :param config: configuration dict
-    :param remote_service: the remote service to expose (of the server; defaults to Void)
-    :param remote_config: remote configuration dict (of the server)
-    """
-    listener = socket.socket()
-    listener.bind(("localhost", 0))
-    listener.listen(1)
-    remote_server = partial(_server, listener, remote_service, remote_config)
-    spawn(remote_server)
-    host, port = listener.getsockname()
-    return connect(host, port, service=service, config=config)
-
-
+# ``connect_thread`` — DELETED as part of the PID-namespaced id_pack fix.
+# See ``docs/DESIGN_PID_NAMESPACED_ID_PACK.md`` §5. The legacy
+# single-process client+server topology relied on deterministic
+# id_pack seq alignment between the two in-process connections, which
+# directly conflicts with the fix that eliminates cross-process id_pack
+# collisions. It was not used by production code; its only consumer
+# (``tests/test_refcount.py``) is removed in the same commit.
 def connect_multiprocess(service=VoidService, config={}, remote_service=VoidService, remote_config={}, args={}):
     """starts an rpyc server on a new process, bound to an arbitrary port,
-    and connects to it over a socket. Basically a copy of connect_thread().
+    and connects to it over a socket. Multi-process variant (unrelated
+    to the removed ``connect_thread``).
     However if args is used and if these are shared memory then changes
     will be bi-directional. That is we now have access to shared memory.
 

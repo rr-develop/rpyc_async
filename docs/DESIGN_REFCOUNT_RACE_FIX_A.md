@@ -37,6 +37,16 @@ the object is collected.
 | instance, not weakref-able | connection-local seq, kept alive by the     |
 |                            | `_local_objects` strong ref                 |
 
+> **Updated 2026-04-25:** the fixed ``start=1 << 40`` origin below was
+> replaced by a PID-namespaced seed ``(os.getpid() << 32) + 1``. See
+> [`DESIGN_PID_NAMESPACED_ID_PACK.md`](./DESIGN_PID_NAMESPACED_ID_PACK.md)
+> for the rationale. The old constant survived only as long as there
+> was one process involved; once two independent processes needed
+> globally-unique id_packs, the fixed seed became the direct cause of
+> the cross-process ping-pong leak, and a deterministic PID-namespaced
+> seed replaces it. The rest of this document describes the allocator
+> contract (which is unchanged) — only the starting value moved.
+
 The seq is drawn from `itertools.count(start=1 << 40)`. The high
 starting value:
 

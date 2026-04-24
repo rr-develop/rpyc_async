@@ -294,6 +294,23 @@ else:
 
 ### Why we kept `_unbox(LABEL_REMOTE_REF)`'s `_local_objects` shortcut
 
+> **Superseded 2026-04-25 by
+> [`DESIGN_PID_NAMESPACED_ID_PACK.md`](./DESIGN_PID_NAMESPACED_ID_PACK.md).**
+> The "benign wrong-method-call" claim below turned out to be wrong
+> in production: when the wrong method itself returns a bound method
+> that re-packs with another colliding id_pack, the wrong-call
+> becomes the driver of a sustaining ping-pong — no symmetry needed,
+> the receiver just chases its own tail. PID-namespaced id_pack
+> eliminates the cross-process collision at the source; the shortcut
+> below is kept but now carries a debug-gated assert that the
+> matched slot's seq encodes OUR pid. The old analysis preserved
+> here for historical context.
+>
+> `classic.connect_thread` was deleted in the same change (see §5
+> of that document) — production code does not use single-process
+> client+server topology, and the test that depended on it
+> (`tests/test_refcount.py`) was removed.
+
 The symmetric shortcut on the receive side —
 `if id_pack in self._local_objects._dict: return self._local_objects[id_pack]`
 in `_unbox(LABEL_REMOTE_REF)` — HAS the same collision risk in
@@ -320,10 +337,12 @@ sufficient to close the deadlock.
 
 - **DO NOT** revert to `id_pack in self._local_objects._dict` as
   the sole check in `_box`. Collision hazard.
-- **DO NOT** randomize `_id_pack_seq` origin per connection.
-  Tried it — the random offset makes `connect_thread` fail because
-  classic topology relies on deterministic seq alignment between
-  the two in-process connections.
+- ~~**DO NOT** randomize `_id_pack_seq` origin per connection.~~
+  **Superseded:** the PID-namespaced seed in
+  [`DESIGN_PID_NAMESPACED_ID_PACK.md`](./DESIGN_PID_NAMESPACED_ID_PACK.md)
+  makes seq origins different per process. `connect_thread` was
+  removed in the same change, so the "breaks connect_thread"
+  argument no longer applies.
 - **DO NOT** use `id_pack in self._proxy_cache` instead of
   `_proxy_cache.get(id_pack) is obj`. `WeakValueDict` keys can
   outlive their values (garbage-collected proxy); the identity

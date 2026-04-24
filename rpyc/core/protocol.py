@@ -214,7 +214,23 @@ class Connection(object):
         #    _local_objects holds a strong ref while the seq is
         #    meaningful; see design doc §3 "Why the id-fallback is safe".
         # ═══════════════════════════════════════════════════════════════
-        self._id_pack_seq = itertools.count(1 << 40)
+        # PID-namespaced seq — see docs/DESIGN_PID_NAMESPACED_ID_PACK.md.
+        #
+        # The old seed ``1 << 40`` was identical on every connection in
+        # every process. Two independent peers minted bit-identical
+        # ``id_pack`` tuples for their Nth boxed builtin-typed object
+        # (the receive-side shortcut in ``_unbox(LABEL_REMOTE_REF)``
+        # then resolved peer id_packs to the receiver's own local,
+        # producing infinite ping-pong callbacks — the 10 GB/6 min leak
+        # reported on 2026-04-24).
+        #
+        # Starting the seq at ``(pid << 32) + 1`` makes two LIVE peers'
+        # seq ranges disjoint by kernel guarantee: the kernel never
+        # assigns the same PID to two live processes simultaneously,
+        # therefore their id_pack triples are globally unique while they
+        # both run.  Each process gets a private range of 2**32 seqs,
+        # plenty for any realistic connection lifetime.
+        self._id_pack_seq = itertools.count((os.getpid() << 32) + 1)
         self._obj_to_seq_weak: "weakref.WeakKeyDictionary[Any, int]" = (
             weakref.WeakKeyDictionary()
         )
@@ -1493,6 +1509,28 @@ class Connection(object):
             # return the local object directly instead of creating a proxy.
             # This handles the case where a proxy to remote object is sent back.
             if id_pack in self._local_objects._dict:
+                # With PID-namespaced seqs (see
+                # docs/DESIGN_PID_NAMESPACED_ID_PACK.md) a membership
+                # hit here is only legitimate if slot 2 encodes OUR
+                # pid.  Anything else means a peer handed us an
+                # id_pack that happens to collide with ours — this
+                # was impossible by construction after the fix.
+                # Guard it in debug mode to catch regressions in the
+                # allocator; in production we still fall through to
+                # return the local object (keeping wire-compat with
+                # pre-fix peers).
+                if self._config.get("debug_refcounting", False):
+                    owner_pid = id_pack[2] >> 32
+                    my_pid = os.getpid()
+                    if owner_pid != my_pid:
+                        raise ValueError(
+                            f"id_pack {id_pack} matches a local slot "
+                            f"but slot[2] encodes pid={owner_pid}, "
+                            f"not our pid={my_pid}. This indicates "
+                            f"either a peer running pre-fix rpyc_async "
+                            f"(old fixed 1<<40 seed) or a genuine bug "
+                            f"in _alloc_stable_obj_id."
+                        )
                 # Object is actually local! Return it directly.
                 return self._local_objects[id_pack]
 

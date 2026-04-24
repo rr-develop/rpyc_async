@@ -150,16 +150,9 @@ def connect_subproc(server_file=None):
                                    SlaveService)
 
 
-def connect_thread():
-    """
-    Starts a SlaveService on a thread and connects to it. Useful for testing
-    purposes. See :func:`rpyc.utils.factory.connect_thread`
-
-    :returns: an RPyC connection exposing ``SlaveService``
-    """
-    return factory.connect_thread(SlaveService, remote_service=SlaveService)
-
-
+# ``connect_thread`` — DELETED. See
+# ``docs/DESIGN_PID_NAMESPACED_ID_PACK.md`` §5 and the note in
+# ``rpyc/utils/factory.py`` where the underlying helper lived.
 def connect_multiprocess(args={}):
     """
     Starts a SlaveService on a multiprocess process and connects to it.

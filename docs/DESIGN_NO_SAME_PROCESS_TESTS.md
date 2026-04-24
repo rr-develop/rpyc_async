@@ -2,6 +2,13 @@
 
 Status: **Enforced** by `tests/test_no_same_process_server_client.py`.
 
+> **Updated 2026-04-25:** this rule now also applies to **production
+> code** — not only tests. `classic.connect_thread` and its single-
+> process client+server topology were deleted as part of
+> [`DESIGN_PID_NAMESPACED_ID_PACK.md`](./DESIGN_PID_NAMESPACED_ID_PACK.md).
+> Any future helper that puts a client and server in one OS process is
+> forbidden at the library level, not merely discouraged.
+
 ## 1. The rule
 
 Every test that starts an `AsyncioServer` and connects to it from an rpyc
