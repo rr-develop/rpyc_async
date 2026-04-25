@@ -1642,6 +1642,56 @@ class Connection(object):
 
         return False
 
+    def _send_async_result_safe(self, msg, seq, args_factory):
+        """Send an async REPLY/EXCEPTION, tolerating a dead channel.
+
+        If the peer has closed the underlying stream, ``self._send`` will
+        raise ``EOFError`` (or a related ``OSError`` subclass). There is
+        nothing to reply to at that point — the request is already lost
+        — so we swallow the error and mark the connection closed. If we
+        re-raised, the error would escape ``_dispatch_request_async``,
+        which is scheduled via ``asyncio.run_coroutine_threadsafe`` with
+        no one awaiting its Future; Python would then emit
+        ``Exception ignored in: <coroutine ...>`` on every subsequent
+        dispatch. Under a hot retry loop (e.g. a periodic status-poll
+        watcher) that produces hundreds of thousands of log lines and
+        unbounded memory growth. See a related internal incident analysis
+        (not included here).
+
+        ``args_factory`` is a zero-arg callable that produces the payload
+        lazily — this lets us skip the potentially-expensive ``_box`` /
+        ``_box_exc`` work if we can cheaply short-circuit in future.
+
+        Args:
+            msg: rpyc message type constant.
+            seq: sequence number.
+            args_factory: callable returning the boxed payload.
+        """
+        # Skip the send entirely if the connection is already torn down.
+        # _send would observe the closed channel and raise anyway, but
+        # short-circuiting is clearer (and avoids boxing work that will
+        # be discarded).
+        if self._closed:
+            return
+        try:
+            self._send(msg, seq, args_factory())
+        except (EOFError, OSError) as exc:
+            # OSError covers BrokenPipeError, ConnectionResetError, and
+            # the generic "Bad file descriptor" case that shows up when
+            # a reloader tears the socket down mid-dispatch.
+            logger = self._config.get("logger")
+            if logger is not None:
+                logger.debug(
+                    "async dispatch: channel closed before reply could be "
+                    "sent (msg=%s seq=%s): %s",
+                    msg, seq, exc,
+                )
+            # Mark the connection closed so the next dispatch short-
+            # circuits immediately instead of repeating the failure.
+            # Avoid self.close(): that path does sync_request(HANDLE_CLOSE)
+            # which would itself try to write to the dead channel.
+            self._closed = True
+
     async def _dispatch_request_async(self, seq, raw_args):
         """
         Async version of _dispatch_request() - can await handlers!
@@ -1693,11 +1743,19 @@ class Connection(object):
             if t is KeyboardInterrupt and self._config["propagate_KeyboardInterrupt_locally"]:
                 raise
 
-            # Send async exception reply
-            self._send(consts.MSG_ASYNC_EXCEPTION, seq, self._box_exc(t, v, tb))
+            # Send async exception reply. If the channel is already dead
+            # (peer disconnected), there is nothing to reply to — swallow
+            # the I/O error and mark the connection closed. Letting it
+            # escape here turns every subsequent dispatch into an
+            # unawaited-coroutine log storm (see a related internal incident analysis).
+            self._send_async_result_safe(
+                consts.MSG_ASYNC_EXCEPTION, seq, lambda: self._box_exc(t, v, tb)
+            )
         else:
             # Success - send async reply
-            self._send(consts.MSG_ASYNC_REPLY, seq, self._box(res))
+            self._send_async_result_safe(
+                consts.MSG_ASYNC_REPLY, seq, lambda: self._box(res)
+            )
 
     # ═══════════════════════════════════════════════════════════════
     # End Async Dispatch Pipeline
