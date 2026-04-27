@@ -222,7 +222,7 @@ class Connection(object):
         # (the receive-side shortcut in ``_unbox(LABEL_REMOTE_REF)``
         # then resolved peer id_packs to the receiver's own local,
         # producing infinite ping-pong callbacks — the 10 GB/6 min leak
-        # reported on 2026-04-24).
+        # reported in a related internal incident analysis).
         #
         # Starting the seq at ``(pid << 32) + 1`` makes two LIVE peers'
         # seq ranges disjoint by kernel guarantee: the kernel never
@@ -2295,6 +2295,12 @@ class Connection(object):
     def _async_request(self, handler, args=(), callback=(lambda a, b: None)):  # serving
         seq = self._get_seq_id()
         self._request_callbacks[seq] = callback
+        # Tell the AsyncResult its slot id so that ``__await__`` can
+        # release the slot itself when the awaiter is cancelled. See
+        # ``AsyncResult.__await__`` and the cancel-leak regression
+        # test ``tests/test_asyncresult_cancel_leak.py``.
+        if isinstance(callback, AsyncResult):
+            callback._seq = seq
         try:
             self._send(consts.MSG_REQUEST, seq, (handler, self._box(args)))
         except Exception:

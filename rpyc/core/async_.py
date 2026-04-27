@@ -9,7 +9,13 @@ class AsyncResult(object):
     will eventually have a result. Use the :attr:`value` property to access the
     result (which will block if the result has not yet arrived).
     """
-    __slots__ = ["_conn", "_is_ready", "_is_exc", "_callbacks", "_obj", "_ttl"]
+    # ``_seq`` is set by ``Connection.async_request`` after the request
+    # is registered in ``Connection._request_callbacks``. It enables
+    # ``__await__`` to release the slot on cancel — see the cancel-leak
+    # cleanup in ``__await__`` below and the regression tests in
+    # ``tests/test_asyncresult_cancel_leak.py``.
+    __slots__ = ["_conn", "_is_ready", "_is_exc", "_callbacks", "_obj",
+                 "_ttl", "_seq"]
 
     def __init__(self, conn):
         self._conn = conn
@@ -18,6 +24,7 @@ class AsyncResult(object):
         self._obj = None
         self._callbacks = []
         self._ttl = Timeout(None)
+        self._seq = None
 
     def __repr__(self):
         if self._is_ready:
@@ -178,6 +185,53 @@ class AsyncResult(object):
 
         # Register callback
         self.add_callback(on_result)
+
+        # ─── cancel-leak cleanup ─────────────────────────────────────
+        # When the awaiter is cancelled (asyncio.wait_for timeout, an
+        # outer task.cancel(), the loop shutting down, …) the future
+        # is marked done with CancelledError but the AsyncResult still
+        # sits in ``Connection._request_callbacks[seq]`` waiting for
+        # a reply that may never come — and ``self._callbacks`` still
+        # holds ``on_result``, which closes over ``future``. Both keep
+        # an entire chain (Task / Future / Context / cells / bound
+        # methods) alive indefinitely. On a long-lived process talking
+        # to a flapping peer that grows into multi-GB RSS — see
+        # a related internal incident analysis (not included here).
+        #
+        # Hooking ``future.add_done_callback`` runs once per await
+        # regardless of how the future finishes:
+        #   * Reply arrives normally → ``_seq_request_callback`` has
+        #     already popped our seq from the dict; our pop is a no-op
+        #     thanks to the ``None`` default.
+        #   * Cancel / timeout → we pop the seq ourselves and clear
+        #     ``self._callbacks`` so ``on_result``'s closure releases
+        #     ``future``.
+        #
+        # The cleanup is intentionally tolerant: ``Connection`` may
+        # already have been torn down (``_request_callbacks`` is
+        # ``None`` or replaced), in which case there is nothing to do.
+        async_result_self = self
+
+        def _on_future_done(_fut):
+            try:
+                seq = async_result_self._seq
+                if seq is not None:
+                    cbs = getattr(async_result_self._conn,
+                                  "_request_callbacks", None)
+                    if cbs is not None:
+                        cbs.pop(seq, None)
+                # Drop the closure over ``future`` so the chain is GC'able
+                # whether or not the slot was still in the dict.
+                async_result_self._callbacks = []
+            except Exception:
+                # The cleanup must never raise back into asyncio's
+                # done-callback loop — that would mark the future as
+                # having an unhandled exception and trip the loop's
+                # error handler for what is, by definition, a teardown
+                # path.
+                pass
+
+        future.add_done_callback(_on_future_done)
 
         # ═══════════════════════════════════════════════════════════════
         # CRITICAL: NO POLLING FALLBACK!
