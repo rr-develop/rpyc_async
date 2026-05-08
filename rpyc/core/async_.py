@@ -26,6 +26,55 @@ class AsyncResult(object):
         self._ttl = Timeout(None)
         self._seq = None
 
+    def __del__(self):
+        """Defence-in-depth cleanup of ``Connection._request_callbacks``.
+
+        Background: an outbound async request registers
+        ``self`` in ``conn._request_callbacks[seq]`` and stamps
+        ``self._seq = seq``. The primary cleanup path is
+        ``add_done_callback`` on the future built by ``__await__`` —
+        but that fires only if the future actually finishes. The
+        2026-04-27 cancel-aware fix covers the
+        ``asyncio.wait_for`` timeout / outer cancel case. The
+        2026-05-08 ``fire_and_forget_async`` strong-ref fix
+        (helpers._INFLIGHT) covers the GC-of-pending-task case.
+        ``__del__`` is the third line of defence: if any *future*
+        path of refcount management leaves an AsyncResult
+        unreachable while still holding a stale ``_seq``, this
+        method pops the slot.
+
+        Important contract — identity check before pop:
+
+            We must only pop the slot if ``conn._request_callbacks[seq]
+            is self``. seq numbers can be reused; an old AsyncResult
+            getting garbage-collected must not evict a fresh,
+            unrelated AsyncResult that happens to share the same seq.
+
+        ``__del__`` MUST NOT raise — Python turns exceptions raised
+        in ``__del__`` into stderr warnings via the unraisable-
+        exception handler, but they make the failure mode hard to
+        debug. We swallow everything: by the time ``__del__`` runs,
+        the connection may be half-torn-down (``_request_callbacks``
+        replaced by None or removed entirely) and there is no useful
+        recovery action anyway.
+
+        Regression test:
+        ``rpyc_async/tests/test_fire_and_forget_strong_ref.py``
+        """
+        try:
+            seq = self._seq
+            if seq is None:
+                return
+            cbs = getattr(self._conn, "_request_callbacks", None)
+            if not isinstance(cbs, dict):
+                return
+            # Identity check: only pop if the slot is OURS.
+            if cbs.get(seq) is self:
+                cbs.pop(seq, None)
+        except Exception:
+            # Never propagate from __del__. See the docstring.
+            pass
+
     def __repr__(self):
         if self._is_ready:
             state = "ready"

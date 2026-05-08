@@ -377,6 +377,68 @@ from typing import TypeVar, Callable as CallableType, Awaitable
 T = TypeVar('T')
 
 
+# ─── strong-ref pin for fire-and-forget tasks ──────────────────────────────
+#
+# WHY THIS SET EXISTS — DO NOT REMOVE IT.
+#
+# ``asyncio`` keeps only WEAK references to running tasks (via
+# ``asyncio._all_tasks``, a ``WeakSet`` — explicitly documented at
+# https://docs.python.org/3/library/asyncio-task.html#asyncio.Task with
+# the words "Save a reference to the result of this function, to avoid
+# a task disappearing mid-execution"). A function called
+# ``fire_and_forget_async`` MUST mean what it says: callers throw away
+# the return value, and yet the task must still run to completion. To
+# make that promise hold, the function must keep its OWN strong
+# reference to every Task it creates, until that Task is actually done.
+#
+# Production failure mode if this set is missing (observed in a
+# downstream application; see a related internal incident analysis):
+#
+#   1. ``fire_and_forget_async(conn.root.foo(...), timeout=10, …)``
+#      creates a Task; the caller discards the returned reference.
+#   2. The asyncio loop's only ref is now the WeakSet entry.
+#   3. CPython's GC runs (it always does, sooner or later — every
+#      cycle-detection pass on a busy process can do it).
+#   4. The Task is collected. Its coroutine frame is destroyed. The
+#      ``future = loop.create_future()`` inside
+#      ``AsyncResult.__await__`` is destroyed in PENDING state — no
+#      ``set_result``, no ``set_exception``, no ``cancel()``.
+#   5. The ``add_done_callback`` cleanup in
+#      ``rpyc/core/async_.py::AsyncResult.__await__`` (the cancel-aware
+#      fix) NEVER FIRES, because the future never
+#      reaches a "done" state.
+#   6. The AsyncResult stays pinned in
+#      ``Connection._request_callbacks[seq]`` forever, holding the
+#      whole Future / Context / cells / closures chain (~50 KB each).
+#      ~200 000 of those are enough to push a long-lived agent process
+#      past 10 GB RSS.
+#
+# The fix:
+#
+#   * Every Task this module creates is added to ``_INFLIGHT`` BEFORE
+#     it can run.
+#   * A single done-callback removes the Task from the set the moment
+#     it finishes (success / exception / cancellation — Task.done() is
+#     True for all three). After that the set no longer holds the
+#     Task; both Python's GC and ``asyncio._all_tasks`` are free to
+#     collect it.
+#
+# This trades the (silent) leak for an UPPER BOUND equal to the number
+# of currently in-flight tasks, which is the natural amount of work
+# the process is doing. In particular it does NOT introduce a "hangs
+# forever" failure: the auto-discard runs whenever Task.done() flips
+# True, including ``Task.cancel()``.
+#
+# Regression test:
+# ``rpyc_async/tests/test_fire_and_forget_strong_ref.py``
+#
+# DO NOT remove ``_INFLIGHT`` and DO NOT remove the
+# ``add_done_callback(_INFLIGHT.discard)`` line below. The two together
+# are the entire fix; either one alone is broken (no set → leak; set
+# without auto-discard → unbounded set growth).
+_INFLIGHT: set[asyncio.Task] = set()
+
+
 async def run_with_callbacks(
     awaitable: Awaitable[T],
     *,
@@ -630,4 +692,12 @@ def fire_and_forget_async(
         ),
         name=name,
     )
+    # Pin the task with a STRONG reference until it finishes. See the
+    # extensive comment on ``_INFLIGHT`` above — this is what makes
+    # the promise of "fire and forget" actually hold against a GC
+    # pass that would otherwise collect the discarded return value
+    # and silently kill the task. The auto-discard done-callback
+    # removes the task once it is genuinely finished.
+    _INFLIGHT.add(task)
+    task.add_done_callback(_INFLIGHT.discard)
     return task
