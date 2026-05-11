@@ -231,6 +231,85 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
             ]),
         )
 
+    async def test_dispatch_does_not_call_asyncio_all_tasks(self) -> None:
+        """Regression for the O(N²) dispatch livelock.
+
+        The first cut of the strong-ref pin (commit 0858bd3) used
+        a post-hoc lookup: after ``run_coroutine_threadsafe``
+        scheduled the dispatch task, a callback on the event loop
+        scanned ``asyncio.all_tasks()`` to find the just-created
+        task by matching its coroutine's qualname and the
+        ``self`` / ``seq`` locals on its frame. That's O(N) where
+        N is the number of tasks in the loop. On a busy
+        bidirectional-async deployment N grows linearly with the
+        ``_DISPATCH_INFLIGHT`` set itself (we pin every dispatch,
+        so the set IS the task list), making each new dispatch
+        O(N), i.e. the whole pipeline O(N²) in the number of
+        dispatches processed.
+
+        Production observation: a downstream application
+        hit livelock after ~26 minutes with N≈32 600 — every
+        new MSG_REQUEST cost ~30 000 task-iterations,
+        ``run_forever`` could no longer drain events fast enough
+        to make progress, the process burned 60-80 % CPU producing
+        zero useful work.
+
+        The contract this test enforces: ``_dispatch`` MUST NOT
+        rely on ``asyncio.all_tasks()`` to identify the task it
+        just scheduled. The correct shape is to keep a direct
+        handle on the Task at the moment of creation (via
+        ``loop.create_task`` inside a ``call_soon_threadsafe``
+        bridge if cross-thread), so pinning is O(1).
+        """
+        loop = asyncio.get_running_loop()
+        conn = _make_connection(self)
+
+        done_event = loop.create_future()
+
+        async def _fast_handler(self_arg, *args, **kwargs):
+            done_event.set_result(None)
+            return None
+
+        conn._HANDLERS = dict(conn._HANDLERS)
+        conn._HANDLERS[consts.HANDLE_ASYNC_CALL] = _fast_handler
+
+        # Spy on asyncio.all_tasks — if the fix uses it, this
+        # counter will spike.
+        import asyncio as _asy
+        original_all_tasks = _asy.all_tasks
+        call_count = [0]
+
+        def counting_all_tasks(*args, **kwargs):
+            call_count[0] += 1
+            return original_all_tasks(*args, **kwargs)
+
+        _asy.all_tasks = counting_all_tasks
+        try:
+            from rpyc.core import brine
+            seq = 0xCAFE
+            data = brine.I1.pack(consts.MSG_REQUEST) + brine.dump(
+                (seq, (consts.HANDLE_ASYNC_CALL, (consts.LABEL_TUPLE, ())))
+            )
+            conn._dispatch(data)
+            await asyncio.wait_for(done_event, timeout=2.0)
+            # One extra tick for done-callbacks.
+            for _ in range(3):
+                await asyncio.sleep(0)
+        finally:
+            _asy.all_tasks = original_all_tasks
+
+        self.assertEqual(
+            call_count[0], 0,
+            f"_dispatch called asyncio.all_tasks() {call_count[0]} "
+            f"time(s) while scheduling a single MSG_REQUEST. "
+            f"This is the O(N²) livelock pattern from commit "
+            f"0858bd3 and a related production incident — "
+            f"see a related internal incident analysis. "
+            f"Pin the Task at the moment of creation instead "
+            f"(loop.create_task in a call_soon_threadsafe bridge), "
+            f"not by post-hoc all_tasks() scan."
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

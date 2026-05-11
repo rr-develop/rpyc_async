@@ -1962,70 +1962,66 @@ class Connection(object):
                 # finishes (success / handler-exception / cancel),
                 # so the set never grows beyond the in-flight working
                 # set.
-                _cf_future = asyncio.run_coroutine_threadsafe(
-                    self._dispatch_request_async(seq, args),
-                    self._asyncio_loop
-                )
-                # ``run_coroutine_threadsafe`` returns a
-                # ``concurrent.futures.Future`` that wraps an
-                # ``asyncio.Task`` running on ``self._asyncio_loop``.
-                # We need the asyncio.Task itself for the pin (the
-                # cf.Future is just a thread-safe handle). Retrieve
-                # it by scheduling a tiny callback on the loop that
-                # captures the running Task — but the simpler approach
-                # is to NOT use run_coroutine_threadsafe when we are
-                # already on the right loop, and use create_task
-                # otherwise. Both produce a Task we can pin directly.
+                # ── O(1) schedule + pin ────────────────────────────
+                # We need TWO things for every inbound dispatch:
+                #   1. The coroutine must start running on
+                #      ``self._asyncio_loop`` (which may be on a
+                #      different thread from the channel reader).
+                #   2. The resulting ``asyncio.Task`` must be added
+                #      to ``_DISPATCH_INFLIGHT`` (see module-level
+                #      docstring on why this strong-ref pin is
+                #      mandatory).
                 #
-                # In the common case where _dispatch is invoked from
-                # the same event loop (asyncio serving), we are
-                # already on ``self._asyncio_loop`` and could call
-                # ``loop.create_task`` directly. But _dispatch is
-                # also called from the channel-reader thread in
-                # some configurations, where run_coroutine_threadsafe
-                # is the only safe option. We use a small bridge
-                # function that pins the task once it's been created.
-                def _pin_task_on_loop():
-                    # Inside the loop thread — find the just-created
-                    # Task and pin it. The Task is identifiable via
-                    # the cf.Future's __wrapped__ task (CPython
-                    # private attr, but stable since 3.4). Fall back
-                    # to scanning asyncio.all_tasks() filtered by
-                    # coroutine identity.
-                    task = None
-                    try:
-                        # CPython internals: run_coroutine_threadsafe
-                        # stores the Task in a closure on cf.Future
-                        # via add_done_callback. There is no public
-                        # accessor. We do not depend on it. Instead
-                        # scan all_tasks for the one whose coro
-                        # qualname matches and whose self is us.
-                        for t in asyncio.all_tasks(self._asyncio_loop):
-                            coro = t.get_coro()
-                            qn = getattr(getattr(coro, "cr_code", None),
-                                         "co_qualname", "")
-                            if "_dispatch_request_async" not in qn:
-                                continue
-                            frame = getattr(coro, "cr_frame", None)
-                            if frame is None:
-                                continue
-                            if frame.f_locals.get("self") is self and \
-                               frame.f_locals.get("seq") == seq:
-                                task = t
-                                break
-                    except Exception:
-                        return
-                    if task is not None and not task.done():
-                        _DISPATCH_INFLIGHT.add(task)
-                        task.add_done_callback(_DISPATCH_INFLIGHT.discard)
+                # The OBVIOUSLY-WRONG way (used in the first cut of
+                # this fix, commit 0858bd3, caused a production
+                # livelock) is to call
+                # ``asyncio.run_coroutine_threadsafe(...)`` and then,
+                # in a separate ``call_soon_threadsafe`` callback,
+                # scan ``asyncio.all_tasks()`` to find the Task we
+                # just scheduled by matching its coroutine's
+                # qualname + frame.f_locals. That's O(N) where N is
+                # the number of in-flight tasks — and since this
+                # very mechanism pins every dispatch, N grows with
+                # the number of dispatches processed. End state:
+                # O(N²), livelock, 60–80 % CPU on
+                # ``frame.f_locals.get("self") is self`` scans, zero
+                # forward progress.
+                #
+                # The CORRECT way (this code) is to schedule the
+                # task via a tiny bridge that runs ON the loop
+                # thread and ALREADY has the Task object in its
+                # hands — no lookup needed:
+                #
+                #   def _schedule():
+                #       task = loop.create_task(coro)
+                #       _DISPATCH_INFLIGHT.add(task)
+                #       task.add_done_callback(_DISPATCH_INFLIGHT.discard)
+                #
+                #   loop.call_soon_threadsafe(_schedule)
+                #
+                # This is O(1) per dispatch — three dict-set ops,
+                # one ``add_done_callback``, no traversal of any
+                # collection whose size scales with the number of
+                # live tasks. Regression test:
+                # ``tests/test_dispatch_strong_ref.py::
+                #  test_dispatch_does_not_call_asyncio_all_tasks``.
+                #
+                # The coroutine is built HERE on the channel-reader
+                # thread (it doesn't start running until create_task
+                # picks it up), then passed by closure into
+                # ``_schedule``. Calling
+                # ``self._dispatch_request_async(seq, args)`` from
+                # the wrong thread is safe — it just constructs a
+                # coroutine object; no awaits happen until the loop
+                # actually starts driving it.
+                _coro = self._dispatch_request_async(seq, args)
 
-                # Run the pinning on the event loop thread — that's
-                # where ``asyncio.all_tasks`` is safe to call. The
-                # call_soon_threadsafe runs immediately AFTER
-                # run_coroutine_threadsafe has scheduled the task,
-                # so the task is already in asyncio's bookkeeping by
-                # the time we look.
-                self._asyncio_loop.call_soon_threadsafe(_pin_task_on_loop)
+                def _schedule(_coro=_coro):
+                    task = asyncio.get_event_loop().create_task(_coro)
+                    _DISPATCH_INFLIGHT.add(task)
+                    task.add_done_callback(_DISPATCH_INFLIGHT.discard)
+
+                self._asyncio_loop.call_soon_threadsafe(_schedule)
                 # Returns immediately - does NOT block!
             elif needs_async:
                 # ASYNC DISPATCH (no event loop available - ERROR)
