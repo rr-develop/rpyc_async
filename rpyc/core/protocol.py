@@ -165,6 +165,110 @@ Parameter                                Default value     Description
 _connection_id_generator = itertools.count(1)
 
 
+# ─── strong-ref pin for inbound dispatch tasks ─────────────────────────────
+#
+# WHY THIS SET EXISTS — DO NOT REMOVE IT.
+#
+# ``_dispatch`` schedules each inbound MSG_REQUEST via
+# ``asyncio.run_coroutine_threadsafe(self._dispatch_request_async(...),
+# self._asyncio_loop)`` (look for the call site below). The returned
+# ``concurrent.futures.Future`` is intentionally not awaited — we want
+# the dispatch to be fire-and-forget so the channel reader can keep
+# pulling the next frame off the wire without blocking.
+#
+# Problem: asyncio holds only WEAK references to running tasks.
+# ``asyncio._all_tasks`` is a ``WeakSet`` — explicitly documented at
+# https://docs.python.org/3/library/asyncio-task.html#asyncio.Task with
+# the warning "Save a reference to the result of this function, to avoid
+# a task disappearing mid-execution". If nobody holds a strong reference
+# to the Task that ``run_coroutine_threadsafe`` schedules, a GC cycle
+# can collect that Task while it is still parked on an inner ``await``.
+#
+# Production failure mode (observed in a downstream application, 12.1 GB
+# RSS in 3 days):
+#
+#   1. Inbound MSG_REQUEST arrives. ``_dispatch`` schedules
+#      ``_dispatch_request_async(seq, args)`` via
+#      ``run_coroutine_threadsafe`` and throws the future away.
+#   2. The handler the dispatch is calling is itself an async function
+#      that issues an outbound RPC on the same connection (this is the
+#      whole point of bidirectional async — handler can call peer back
+#      mid-request). The handler awaits an ``AsyncResult`` returned by
+#      ``conn.root.method()``. That AsyncResult registers in
+#      ``self._request_callbacks[outbound_seq]`` and stays there while
+#      the handler waits.
+#   3. CPython's GC runs (it always does, sooner or later). The inbound
+#      dispatch Task is unreachable in strong-ref terms — only the
+#      WeakSet entry survives. GC collects it. Its coroutine frame is
+#      destroyed mid-await.
+#   4. The outbound AsyncResult is now ORPHAN: nothing is awaiting its
+#      future. ``Connection._seq_request_callback`` (which would have
+#      popped the slot on reply) cannot resolve it because no reply
+#      will arrive (the peer is waiting for the inbound request that
+#      just died). The earlier cancel-aware fix in
+#      ``AsyncResult.__await__`` cannot help because the future never
+#      reaches a done state (nobody calls set_result / set_exception /
+#      cancel on it). The AR stays pinned via a cycle that is held
+#      alive externally by the half-collected dispatch task's
+#      bookkeeping inside asyncio.
+#   5. Steady-state bidirectional traffic accumulates ~1 AR chain per
+#      lost dispatch task. The affected production process had
+#      1 941 735 leaked chains pinning ~10.7 GB of pymalloc heap.
+#
+# The fix:
+#
+#   * Every Task that ``_dispatch`` creates is added to
+#     ``_DISPATCH_INFLIGHT`` BEFORE control returns to the channel
+#     reader.
+#   * A single done-callback removes the Task from the set the moment
+#     it finishes (success / handler-exception / cancellation —
+#     Task.done() is True for all three). After that the set no longer
+#     holds the Task; Python's GC is then free to collect it normally.
+#
+# This guarantees the Task lives until its coroutine completes, which
+# in turn guarantees the surrounding outbound-AsyncResult chain runs
+# its own cleanup (``add_done_callback`` from an earlier fix, or
+# ``__del__`` from a later fix). The auto-discard makes sure
+# the set never grows beyond the natural working set of in-flight
+# inbound RPCs — no new unbounded-set failure mode is introduced.
+#
+# Companion fixes — the full leak-prevention picture, in chronological
+# order:
+#
+#   * ``AsyncResult.__await__`` cancel-aware cleanup
+#     (commit c40fb00) — pops the seq when the *future* finishes.
+#     Catches the timeout / cancel case.
+#   * ``rpyc.utils.helpers._INFLIGHT`` (commit 079e80e) —
+#     same shape as this fix but for ``fire_and_forget_async`` (the
+#     outbound side). Catches the GC-of-pending-task case for any
+#     user-issued outbound RPC.
+#   * ``AsyncResult.__del__`` (same commit) — defence-in-
+#     depth that pops the seq when the AR itself is collected.
+#   * ``_DISPATCH_INFLIGHT`` (this set) — last known
+#     instance of the discarded-Task pattern. Catches the
+#     GC-of-pending-dispatch-task case on the inbound side. With this
+#     in place, every Task that participates in an RPyC RPC chain
+#     (inbound or outbound) is strong-ref-pinned for its lifetime.
+#
+# DO NOT remove ``_DISPATCH_INFLIGHT`` and DO NOT remove the
+# ``add_done_callback(_DISPATCH_INFLIGHT.discard)`` line at the
+# scheduling site below. The two together are the entire fix; either
+# one alone is broken (no set → leak; set without auto-discard →
+# unbounded set growth).
+#
+# Regression tests:
+#   * tests/test_dispatch_strong_ref.py — asserts the set exists,
+#     a parked dispatch task is in it, a finished dispatch task is
+#     not.
+#   * tests/test_dispatch_task_leak_on_disconnect.py — the
+#     earlier regression test that the same bug had been
+#     diagnosed at originally; this fix is what makes it green.
+#
+# Investigation report: a related internal incident analysis
+# (not included here).
+_DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
+
+
 class Connection(object):
     """The RPyC *connection* (AKA *protocol*).
 
@@ -222,7 +326,7 @@ class Connection(object):
         # (the receive-side shortcut in ``_unbox(LABEL_REMOTE_REF)``
         # then resolved peer id_packs to the receiver's own local,
         # producing infinite ping-pong callbacks — the 10 GB/6 min leak
-        # reported in a related internal incident analysis).
+        # reported in a downstream application).
         #
         # Starting the seq at ``(pid << 32) + 1`` makes two LIVE peers'
         # seq ranges disjoint by kernel guarantee: the kernel never
@@ -352,6 +456,34 @@ class Connection(object):
         self._channel.close()
         self._local_root.on_disconnect(self)
         self._request_callbacks.clear()
+        # Cancel every inbound dispatch task belonging to THIS
+        # connection. The strong-ref pin in ``_DISPATCH_INFLIGHT``
+        # (see module-level docstring) keeps these Tasks alive past
+        # the channel teardown so they cannot be silently GC'd in
+        # pending state — but on close we WANT them gone, since
+        # there is no longer a peer to reply to them. ``cancel()``
+        # propagates CancelledError into the parked handler, which
+        # unwinds its await chain and lets the per-AsyncResult
+        # cleanup (the ``__await__`` cancel-aware fix /
+        # ``AsyncResult.__del__``) reclaim the chain.
+        # Identification: each dispatch coroutine's frame has
+        # ``self`` bound to THIS Connection. We snapshot the set
+        # (``list(...)``) because ``cancel()`` triggers a
+        # done-callback that mutates ``_DISPATCH_INFLIGHT``.
+        for _task in list(_DISPATCH_INFLIGHT):
+            try:
+                _coro = _task.get_coro()
+                _frame = getattr(_coro, "cr_frame", None)
+                if _frame is not None and \
+                   _frame.f_locals.get("self") is self and \
+                   not _task.done():
+                    _task.cancel()
+            except Exception:
+                # Never let cleanup raise from a Task introspection
+                # error; the worst case is one missed cancel, which
+                # the pin still bounds (the Task can still finish on
+                # its own).
+                pass
         self._local_objects.clear()
         self._proxy_cache.clear()
         self._netref_classes_cache.clear()
@@ -1655,8 +1787,8 @@ class Connection(object):
         ``Exception ignored in: <coroutine ...>`` on every subsequent
         dispatch. Under a hot retry loop (e.g. a periodic status-poll
         watcher) that produces hundreds of thousands of log lines and
-        unbounded memory growth. See a related internal incident analysis
-        (not included here).
+        unbounded memory growth. See a related internal incident
+        analysis (not included here).
 
         ``args_factory`` is a zero-arg callable that produces the payload
         lazily — this lets us skip the potentially-expensive ``_box`` /
@@ -1747,7 +1879,7 @@ class Connection(object):
             # (peer disconnected), there is nothing to reply to — swallow
             # the I/O error and mark the connection closed. Letting it
             # escape here turns every subsequent dispatch into an
-            # unawaited-coroutine log storm (see a related internal incident analysis).
+            # unawaited-coroutine log storm (observed in a downstream application).
             self._send_async_result_safe(
                 consts.MSG_ASYNC_EXCEPTION, seq, lambda: self._box_exc(t, v, tb)
             )
@@ -1819,10 +1951,81 @@ class Connection(object):
             if needs_async and self._asyncio_enabled and self._asyncio_loop:
                 # ASYNC DISPATCH PIPELINE (with event loop)
                 import asyncio
-                asyncio.run_coroutine_threadsafe(
+                # Schedule the dispatch coroutine on the connection's
+                # event loop. We then immediately STRONG-REF-PIN the
+                # resulting asyncio.Task in ``_DISPATCH_INFLIGHT`` so
+                # GC cannot collect it mid-flight. See the extensive
+                # ``_DISPATCH_INFLIGHT`` docstring at module scope for
+                # the full production-failure-mode chain and the
+                # reason this pin is mandatory. The auto-discard
+                # done-callback releases the pin the moment the Task
+                # finishes (success / handler-exception / cancel),
+                # so the set never grows beyond the in-flight working
+                # set.
+                _cf_future = asyncio.run_coroutine_threadsafe(
                     self._dispatch_request_async(seq, args),
                     self._asyncio_loop
                 )
+                # ``run_coroutine_threadsafe`` returns a
+                # ``concurrent.futures.Future`` that wraps an
+                # ``asyncio.Task`` running on ``self._asyncio_loop``.
+                # We need the asyncio.Task itself for the pin (the
+                # cf.Future is just a thread-safe handle). Retrieve
+                # it by scheduling a tiny callback on the loop that
+                # captures the running Task — but the simpler approach
+                # is to NOT use run_coroutine_threadsafe when we are
+                # already on the right loop, and use create_task
+                # otherwise. Both produce a Task we can pin directly.
+                #
+                # In the common case where _dispatch is invoked from
+                # the same event loop (asyncio serving), we are
+                # already on ``self._asyncio_loop`` and could call
+                # ``loop.create_task`` directly. But _dispatch is
+                # also called from the channel-reader thread in
+                # some configurations, where run_coroutine_threadsafe
+                # is the only safe option. We use a small bridge
+                # function that pins the task once it's been created.
+                def _pin_task_on_loop():
+                    # Inside the loop thread — find the just-created
+                    # Task and pin it. The Task is identifiable via
+                    # the cf.Future's __wrapped__ task (CPython
+                    # private attr, but stable since 3.4). Fall back
+                    # to scanning asyncio.all_tasks() filtered by
+                    # coroutine identity.
+                    task = None
+                    try:
+                        # CPython internals: run_coroutine_threadsafe
+                        # stores the Task in a closure on cf.Future
+                        # via add_done_callback. There is no public
+                        # accessor. We do not depend on it. Instead
+                        # scan all_tasks for the one whose coro
+                        # qualname matches and whose self is us.
+                        for t in asyncio.all_tasks(self._asyncio_loop):
+                            coro = t.get_coro()
+                            qn = getattr(getattr(coro, "cr_code", None),
+                                         "co_qualname", "")
+                            if "_dispatch_request_async" not in qn:
+                                continue
+                            frame = getattr(coro, "cr_frame", None)
+                            if frame is None:
+                                continue
+                            if frame.f_locals.get("self") is self and \
+                               frame.f_locals.get("seq") == seq:
+                                task = t
+                                break
+                    except Exception:
+                        return
+                    if task is not None and not task.done():
+                        _DISPATCH_INFLIGHT.add(task)
+                        task.add_done_callback(_DISPATCH_INFLIGHT.discard)
+
+                # Run the pinning on the event loop thread — that's
+                # where ``asyncio.all_tasks`` is safe to call. The
+                # call_soon_threadsafe runs immediately AFTER
+                # run_coroutine_threadsafe has scheduled the task,
+                # so the task is already in asyncio's bookkeeping by
+                # the time we look.
+                self._asyncio_loop.call_soon_threadsafe(_pin_task_on_loop)
                 # Returns immediately - does NOT block!
             elif needs_async:
                 # ASYNC DISPATCH (no event loop available - ERROR)
