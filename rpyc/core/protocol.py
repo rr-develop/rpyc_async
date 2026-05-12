@@ -363,6 +363,21 @@ class Connection(object):
             f"Refcount error monitoring: ENABLED (errors always logged to stderr)",
             file=sys.stderr
         )
+        # ``_last_traceback`` is kept as an attribute for binary-
+        # compatibility with ``rpyc.utils.classic.pdb_post_mortem``,
+        # which reads it across an RPC. PRODUCTION CODE MUST NEVER
+        # WRITE TO IT. Storing a live TracebackType here pins every
+        # ``tb_frame``'s ``f_locals`` for the lifetime of the
+        # Connection, which on a busy bidirectional-async
+        # deployment cascades into a multi-GB AsyncResult retention
+        # leak — see a related internal incident analysis (not
+        # included here)
+        # for the production failure and the regression tests in
+        # ``tests/test_traceback_no_retention.py`` that guard this
+        # invariant. If you find yourself reaching for
+        # ``self._last_traceback = tb``: capture the text via
+        # ``traceback.format_exception(...)``, store the string,
+        # and drop the live ``tb`` immediately.
         self._last_traceback = None
         self._proxy_cache = WeakValueDict()
         self._netref_classes_cache = {}
@@ -1862,9 +1877,53 @@ class Connection(object):
                     res = await res
 
         except:  # TODO: revisit exception handling
-            # Exception during execution
+            # Exception during execution.
+            #
+            # ─── traceback retention safety ─────────────────────
+            # CRITICAL: we MUST NOT store the live ``tb`` object on
+            # any long-lived attribute. A TracebackType keeps every
+            # ``tb_frame`` alive, and each frame's ``f_locals``
+            # keeps every local variable it had at the moment of
+            # the exception — including any ``AsyncResult`` the
+            # handler was awaiting on. On a busy bidirectional-
+            # async deployment, one cancellation cascade through
+            # ``Connection._cleanup`` raises ``CancelledError`` in
+            # every in-flight dispatch task. If we hang on to those
+            # tracebacks, EACH one pins its handler frame's locals
+            # = a full AsyncResult chain = 50 KB+ leaked per
+            # cancelled request. The production incident
+            # accumulated 4 038 032 AR chains and 17.8 GB RSS this
+            # way. See a related internal incident analysis (not
+            # included here).
+            #
+            # The fix:
+            #   1. Eagerly box the exception NOW, while ``tb`` is
+            #      on the local stack and about to disappear. This
+            #      produces a brine-dumpable tuple (string text
+            #      for the traceback, no live frames).
+            #   2. Pass the *result* of boxing to
+            #      ``_send_async_result_safe``, NOT a lambda that
+            #      closes over ``t, v, tb``. A closure over those
+            #      would re-create the retention bug if the lambda
+            #      ever outlives this frame.
+            #   3. Do not store ``tb`` on ``self`` under any name.
+            #      The legacy ``self._last_traceback`` was used by
+            #      ``rpyc.utils.classic.pdb_post_mortem`` — a
+            #      developer-debug path that has no business
+            #      shipping in production. If post-mortem ever
+            #      needs to come back, it should grab the
+            #      traceback at the point of debugging via
+            #      ``sys.last_traceback`` or by re-raising, not by
+            #      having every Connection carry one around.
+            #   4. ``del t, v, tb`` at the end of the ``except``
+            #      block. CPython auto-deletes only the bound name
+            #      in ``except X as e:`` — ``sys.exc_info()`` tuple
+            #      members are regular locals and stay until the
+            #      coroutine frame itself is collected. For a hot
+            #      dispatch loop "until the frame is collected" is
+            #      "until the next await suspends and resumes" —
+            #      long enough for GC to see the chain.
             t, v, tb = sys.exc_info()
-            self._last_traceback = tb
 
             logger = self._config["logger"]
             if logger and t is not StopIteration:
@@ -1875,14 +1934,32 @@ class Connection(object):
             if t is KeyboardInterrupt and self._config["propagate_KeyboardInterrupt_locally"]:
                 raise
 
+            # Eagerly box; do NOT capture (t, v, tb) in a closure.
+            try:
+                boxed = self._box_exc(t, v, tb)
+            except Exception:
+                # If boxing itself fails (rare — should always be
+                # safe for primitive errors), fall back to a
+                # plain string repr to avoid retaining tb.
+                boxed = self._box_exc(
+                    RuntimeError,
+                    RuntimeError(f"unboxable {t!r}: {v!r}"),
+                    None,
+                )
             # Send async exception reply. If the channel is already dead
             # (peer disconnected), there is nothing to reply to — swallow
             # the I/O error and mark the connection closed. Letting it
             # escape here turns every subsequent dispatch into an
             # unawaited-coroutine log storm (observed in a downstream application).
             self._send_async_result_safe(
-                consts.MSG_ASYNC_EXCEPTION, seq, lambda: self._box_exc(t, v, tb)
+                consts.MSG_ASYNC_EXCEPTION, seq, lambda boxed=boxed: boxed
             )
+            # Drop strong refs to traceback and exception value
+            # before this coroutine frame can be inspected by any
+            # other path (cancellation, debugger, gc walk). See
+            # the "traceback retention safety" comment above for
+            # why this matters.
+            del t, v, tb, boxed
         else:
             # Success - send async reply
             self._send_async_result_safe(
@@ -1899,9 +1976,19 @@ class Connection(object):
             args = self._unbox(args)
             res = self._HANDLERS[handler](self, *args)
         except:  # TODO: revisit how to catch handle locally, this should simplify when py2 is dropped
-            # need to catch old style exceptions too
+            # need to catch old style exceptions too.
+            #
+            # SAME traceback-retention safety as the async catch-
+            # all above (search for "traceback retention safety"
+            # in this file). We DO NOT store ``tb`` on ``self``
+            # because a long-lived attribute holding a TracebackType
+            # pins every frame's f_locals — which on a busy
+            # connection means every AsyncResult the handler was
+            # awaiting on. The production incident
+            # accumulated 4 M leaked AsyncResult chains and
+            # 17.8 GB RSS through this exact pattern; see a related
+            # internal incident analysis (not included here).
             t, v, tb = sys.exc_info()
-            self._last_traceback = tb
             logger = self._config["logger"]
             if logger and t is not StopIteration:
                 logger.debug("Exception caught", exc_info=True)
@@ -1909,7 +1996,11 @@ class Connection(object):
                 raise
             if t is KeyboardInterrupt and self._config["propagate_KeyboardInterrupt_locally"]:
                 raise
-            self._send(consts.MSG_EXCEPTION, seq, self._box_exc(t, v, tb))
+            # Box now (returns brine-dumpable tuple with text-only
+            # traceback) — release ``tb`` before send.
+            boxed = self._box_exc(t, v, tb)
+            self._send(consts.MSG_EXCEPTION, seq, boxed)
+            del t, v, tb, boxed
         else:
             self._send(consts.MSG_REPLY, seq, self._box(res))
 
