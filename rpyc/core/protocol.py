@@ -269,6 +269,83 @@ _connection_id_generator = itertools.count(1)
 _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 
 
+# ─── strong-ref pin for the per-Connection cleanup_loop task ───────────────
+#
+# WHY THIS SET EXISTS — DO NOT REMOVE IT.
+#
+# Each ``Connection._start_cleanup_task()`` schedules a long-lived
+# ``cleanup_loop()`` coroutine via ``loop.create_task(...)``. The
+# resulting Task is stored on ``self._cleanup_task`` for ``close()``-time
+# cancellation. The coroutine itself closes over ``self`` (it touches
+# ``self._deletion_available``, ``self._cleanup_running``,
+# ``self.closed``, ``self._process_pending_deletions``).
+#
+# That makes a strong-reference CYCLE:
+#
+#   Connection
+#     → _cleanup_task         (strong; stored on the Connection)
+#     → asyncio.Task
+#     → coroutine             (the cleanup_loop() generator)
+#     → coroutine.cr_frame.f_locals['self']
+#     → Connection            (back to the start)
+#
+# Python's cycle collector breaks cycles as soon as NO EXTERNAL
+# strong reference holds either end. ``asyncio._all_tasks`` is a
+# ``WeakSet`` and does NOT provide one. So when the last
+# application-level reference to the Connection goes away — for
+# example when a downstream application's connection registry
+# evicts a torn-down connection through the ``is_connected``
+# liveness probe — the entire cycle becomes
+# collectible. The cleanup_loop Task is destroyed while still
+# parked on ``await self._deletion_available.wait()``. asyncio
+# emits ``Task was destroyed but it is pending!`` and any
+# HANDLE_DEL entries still queued in ``self._pending_deletions``
+# are silently dropped → remote netrefs LEAK on the peer.
+#
+# Production failure (observed in a downstream application): the log
+# captured the canonical signature:
+#
+#   asyncio - ERROR - Task was destroyed but it is pending!
+#   task: <Task pending name='Task-3309'
+#          coro=<Connection._start_cleanup_task.<locals>.cleanup_loop()
+#                  running at rpyc/core/protocol.py:939>
+#          wait_for=<Future pending cb=[Task.task_wakeup()]>>
+#   WARNING: Failed to delete remote object
+#            (a remote service netref). Possible memory leak on
+#            remote side.
+#
+# The fix has TWO halves and either half alone is broken:
+#
+#   1. ``_CLEANUP_LOOPS`` (this set) holds a strong reference to
+#      every cleanup_loop Task at module scope. That reference is
+#      independent of the Connection, so GC of the Connection
+#      does not destroy the Task. ``Task.add_done_callback(
+#      _CLEANUP_LOOPS.discard)`` releases the strong-ref once the
+#      Task is genuinely done, so the set never grows beyond the
+#      live-Connection working set.
+#
+#   2. The cleanup_loop coroutine must NOT close over
+#      ``self`` directly — that would re-introduce a strong-ref
+#      cycle on the OTHER side (Task → coroutine → self), making
+#      the Connection live forever (because _CLEANUP_LOOPS keeps
+#      the Task alive). Instead the coroutine takes a
+#      ``weakref.ref(self)`` and dereferences on each iteration.
+#      When the Connection is collected, the weakref returns
+#      ``None`` and the loop drains any final deletions then
+#      exits cleanly.
+#
+# Connection's GC is wired to signal the loop via
+# ``weakref.finalize`` — the finalize callback sets
+# ``_deletion_available`` so the loop's ``event.wait()`` unblocks
+# and the ``finally:`` drain runs.
+#
+# Regression tests: ``tests/test_cleanup_loop_pin.py``.
+# DO NOT remove ``_CLEANUP_LOOPS`` and DO NOT change cleanup_loop
+# to close over ``self`` directly — see a related internal incident
+# analysis (not included here).
+_CLEANUP_LOOPS: "set[asyncio.Task]" = set()
+
+
 class Connection(object):
     """The RPyC *connection* (AKA *protocol*).
 
@@ -924,53 +1001,113 @@ class Connection(object):
         # Creating from a different loop raises RuntimeError on .wait().
         self._deletion_available = asyncio.Event()
 
+        # ── strong-ref cycle prevention — see _CLEANUP_LOOPS docstring ──
+        # We intentionally DO NOT close over ``self`` inside
+        # ``cleanup_loop``. Instead the coroutine takes a weakref and
+        # dereferences it on every iteration. This way:
+        #
+        #   * _CLEANUP_LOOPS holds the Task (so the Task survives GC of
+        #     the Connection), and
+        #   * the Task does NOT hold the Connection (so the Connection
+        #     stays collectible when application drops its last ref).
+        #
+        # Together they let GC reclaim the Connection without
+        # destroying the cleanup_loop coroutine pending. The
+        # ``weakref.finalize`` registered below signals the loop to
+        # wake up the moment the Connection is collected, so its
+        # ``finally:``-block drain runs and any final HANDLE_DELs go
+        # out before the Task exits.
+        self_wref = weakref.ref(self)
+        # Local capture of the wake-up event — it lives on the
+        # Connection, so we resolve it once here and keep a strong
+        # ref for the lifetime of the loop. The Event by itself does
+        # not own the Connection.
+        event = self._deletion_available
+        # Logger comes from config (a plain dict) so referencing it
+        # by closure does NOT pin the Connection.
+        logger = self._config.get("logger")
+
         async def cleanup_loop() -> None:
             """Main cleanup loop — event-driven, no polling.
 
-            Wakes only when (a) a deletion is enqueued, or (b) the connection
-            is closing. Zero wakeups while idle.
+            Wakes only when (a) a deletion is enqueued, or (b) the
+            connection is closing, or (c) the Connection itself has
+            been GC'd (signalled via the weakref.finalize hook below).
+            Zero wakeups while idle.
             """
-            event = self._deletion_available
             try:
-                while self._cleanup_running and not self.closed:
+                while True:
+                    conn = self_wref()
+                    if conn is None:
+                        break  # Connection collected; just run finally drain
+                    if not conn._cleanup_running or conn.closed:
+                        break
+                    # Release the strong ref BEFORE we await; we only
+                    # want to hold the Connection during the active
+                    # tick, never across an await boundary.
+                    conn = None
                     try:
                         # Event-driven wait. Zero CPU while nothing to do.
-                        assert event is not None
                         await event.wait()
                         event.clear()
-
-                        if not self._cleanup_running or self.closed:
+                        conn = self_wref()
+                        if conn is None or not conn._cleanup_running or conn.closed:
                             break
-
-                        # Drain: a burst of deletions may have arrived; process
-                        # them all in one batch.
-                        await self._process_pending_deletions()
+                        # Drain: a burst of deletions may have arrived;
+                        # process them all in one batch.
+                        await conn._process_pending_deletions()
+                        conn = None
                     except asyncio.CancelledError:
                         # Task was cancelled — exit cleanly
                         break
                     except Exception as e:
                         # Log error but continue running. DO NOT add a sleep
                         # here as "backoff" on every error — re-arm by waiting
-                        # for the next signal instead. A true hot-loop error
-                        # would need its own guard, but the current code only
-                        # hits this path on transient protocol issues.
-                        logger = self._config.get("logger")
+                        # for the next signal instead.
                         if logger:
                             logger.error(
                                 f"Error in cleanup loop: {e}", exc_info=True
                             )
-                        # Wait for next signal; if one never comes, the close
-                        # path will drain via _process_pending_deletions_sync.
                         continue
             finally:
                 # Final drain of anything queued after our last wake-up.
-                try:
-                    await self._process_pending_deletions()
-                except Exception:
-                    pass
+                # The Connection may already be gone; if so, there is
+                # nothing to drain (its _pending_deletions queue went
+                # with it) and we just exit.
+                conn = self_wref()
+                if conn is not None:
+                    try:
+                        await conn._process_pending_deletions()
+                    except Exception:
+                        pass
 
-        # Create and start task in event loop
-        self._cleanup_task = self._asyncio_loop.create_task(cleanup_loop())
+        # Create and start task in event loop.
+        task = self._asyncio_loop.create_task(cleanup_loop())
+        self._cleanup_task = task
+        # Pin the Task in the module-level set so that GC of the
+        # Connection cannot destroy it pending. See _CLEANUP_LOOPS
+        # docstring for the full failure-mode chain.
+        _CLEANUP_LOOPS.add(task)
+        task.add_done_callback(_CLEANUP_LOOPS.discard)
+
+        # Register a weakref.finalize callback on THIS Connection.
+        # When the Connection is GC'd, the callback fires and sets
+        # the wake-up event so the cleanup_loop's ``await
+        # event.wait()`` unblocks. The loop then sees ``self_wref()
+        # is None`` and runs its ``finally:`` block, draining any
+        # final HANDLE_DELs and exiting cleanly. Without this, the
+        # loop would stay parked on event.wait() forever after
+        # Connection GC — defeating the whole pin.
+        #
+        # The finalize callback captures only ``event`` (the
+        # asyncio.Event, not the Connection) so it does not itself
+        # create a strong-ref cycle.
+        def _on_connection_collected(_event=event):
+            try:
+                _event.set()
+            except Exception:
+                pass
+        weakref.finalize(self, _on_connection_collected)
 
     def _stop_cleanup_task(self) -> None:
         """
