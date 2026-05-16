@@ -98,6 +98,13 @@ DEFAULT_CONFIG = dict(
     # coalesce deletion bursts into a single cleanup wake-up; users on
     # churn-heavy workloads can tune it up.
     cleanup_debounce=0.0,
+    # Per-Connection cap on simultaneously-inflight inbound dispatch
+    # tasks. Once exceeded, the Connection enters terminal quarantine:
+    # further MSG_REQUEST silently dropped, parked dispatch tasks
+    # cancelled, outbound ``_request_callbacks`` cleared, one ERROR
+    # logged. 0 disables the cap (legacy behaviour). See
+    # docs/DESIGN_INBOUND_BACKPRESSURE.md.
+    max_inbound_inflight=10_000,
 )
 """
 The default configuration dictionary of the protocol. You can override these parameters
@@ -374,6 +381,22 @@ class Connection(object):
         self._sendlock = Lock()
         self._recv_event = Condition()  # TODO: why not simply timeout? why not associate w/ recvlock? explain/redesign
         self._request_callbacks = {}
+        # ─── Per-connection inbound dispatch backpressure ─────────
+        # See docs/DESIGN_INBOUND_BACKPRESSURE.md.
+        # ``_inbound_inflight`` is incremented in the ``_schedule``
+        # closure inside ``_dispatch`` (exactly when a dispatch Task
+        # is added to ``_DISPATCH_INFLIGHT`` for this Connection)
+        # and decremented in the matching ``add_done_callback``.
+        # Once ``_inbound_inflight`` first reaches
+        # ``self._config["max_inbound_inflight"]`` (default 10_000;
+        # 0 disables), ``_inbound_quarantined`` flips to True and
+        # stays there for the rest of the Connection's life —
+        # subsequent inbound MSG_REQUEST is silently dropped. The
+        # one-shot quarantine log is gated by
+        # ``_inbound_quarantine_logged`` to keep the log clean.
+        self._inbound_inflight: int = 0
+        self._inbound_quarantined: bool = False
+        self._inbound_quarantine_logged: bool = False
         # Initialize _local_objects with debug refcounting if enabled
         debug_refcount = self._config.get("debug_refcounting", False)
         logger = self._config.get("logger")
@@ -530,6 +553,115 @@ class Connection(object):
         a, b = object.__repr__(self).split(" object ")
         return f"{a} {self._config['connid']!r} object {b}"
 
+    # ─────────────────────────────────────────────────────────────
+    # Inbound dispatch backpressure (quarantine path).
+    # See docs/DESIGN_INBOUND_BACKPRESSURE.md.
+    # ─────────────────────────────────────────────────────────────
+
+    def _drain_inbound_dispatch(self) -> None:
+        """Cancel every inbound dispatch task belonging to THIS
+        Connection.
+
+        Shared by ``_cleanup`` (close path) and
+        ``_enter_inbound_quarantine`` (overload path). Each
+        dispatch coroutine's frame has ``self`` bound to its
+        owning Connection, so we walk ``_DISPATCH_INFLIGHT`` and
+        cancel only matches. We snapshot the set via ``list(...)``
+        because ``cancel()`` triggers a done-callback that mutates
+        the set.
+
+        Never raises — Task introspection errors are swallowed; the
+        worst case is one missed cancel, which the strong-ref pin
+        still bounds (the Task can still finish on its own).
+        """
+        for _task in list(_DISPATCH_INFLIGHT):
+            try:
+                _coro = _task.get_coro()
+                _frame = getattr(_coro, "cr_frame", None)
+                if _frame is not None and \
+                   _frame.f_locals.get("self") is self and \
+                   not _task.done():
+                    _task.cancel()
+            except Exception:
+                pass
+
+    def _channel_peer_for_log(self) -> str:
+        """Best-effort peer-addr lookup for the quarantine log line.
+
+        Returns a printable string. Never raises. Returns
+        ``"<unknown>"`` when the underlying stream / socket is not
+        exposed by the channel implementation.
+        """
+        try:
+            stream = getattr(self._channel, "stream", None)
+            sock = getattr(stream, "sock", None) if stream else None
+            if sock is not None:
+                try:
+                    return repr(sock.getpeername())
+                except OSError:
+                    return "<getpeername failed>"
+            endpoints = self._config.get("endpoints")
+            if endpoints:
+                return repr(endpoints[1])
+        except Exception:
+            pass
+        return "<unknown>"
+
+    def _enter_inbound_quarantine(self) -> None:
+        """Transition this Connection to terminal inbound-quarantine.
+
+        Called exactly once per Connection, at the moment
+        ``self._inbound_inflight`` first crosses
+        ``max_inbound_inflight``. From this point onward
+        ``_dispatch`` silently drops MSG_REQUEST on this channel.
+        Outbound AsyncResults waiting for the peer's reply are
+        cleared — by the time we accept the peer has stopped
+        making progress, no future reply is going to reconcile
+        them.
+
+        The Connection is NOT closed. We keep the channel open and
+        drain inbound bytes from the kernel buffer to /dev/null so
+        the peer doesn't get TCP-level backpressure that might
+        make its bug even louder (the broken client
+        would just log harder if we closed). open-and-ignore is
+        the cheapest stable state.
+
+        Idempotent: subsequent invocations are no-ops via the
+        quarantined flag check at the top.
+        """
+        if self._inbound_quarantined:
+            return
+        self._inbound_quarantined = True
+
+        inflight_snapshot = self._inbound_inflight
+        rcb_snapshot = len(self._request_callbacks)
+        peer_repr = self._channel_peer_for_log()
+
+        logger = self._config.get("logger")
+        if logger is not None and not self._inbound_quarantine_logged:
+            self._inbound_quarantine_logged = True
+            try:
+                logger.error(
+                    "rpyc inbound quarantine: connid=%s peer=%s "
+                    "inbound_inflight=%d threshold=%d "
+                    "request_callbacks=%d. Channel kept open; further "
+                    "MSG_REQUEST on this channel are silently dropped. "
+                    "Cancelling parked dispatch tasks and clearing "
+                    "outbound _request_callbacks. See "
+                    "docs/DESIGN_INBOUND_BACKPRESSURE.md.",
+                    self._config.get("connid"),
+                    peer_repr,
+                    inflight_snapshot,
+                    self._config.get("max_inbound_inflight", 0),
+                    rcb_snapshot,
+                )
+            except Exception:
+                # Logging must never break the dispatch path.
+                pass
+
+        self._drain_inbound_dispatch()
+        self._request_callbacks.clear()
+
     def _cleanup(self, _anyway=True):  # IO
         if self._closed and not _anyway:
             return
@@ -559,23 +691,12 @@ class Connection(object):
         # cleanup (the ``__await__`` cancel-aware fix /
         # ``AsyncResult.__del__``) reclaim the chain.
         # Identification: each dispatch coroutine's frame has
-        # ``self`` bound to THIS Connection. We snapshot the set
-        # (``list(...)``) because ``cancel()`` triggers a
-        # done-callback that mutates ``_DISPATCH_INFLIGHT``.
-        for _task in list(_DISPATCH_INFLIGHT):
-            try:
-                _coro = _task.get_coro()
-                _frame = getattr(_coro, "cr_frame", None)
-                if _frame is not None and \
-                   _frame.f_locals.get("self") is self and \
-                   not _task.done():
-                    _task.cancel()
-            except Exception:
-                # Never let cleanup raise from a Task introspection
-                # error; the worst case is one missed cancel, which
-                # the pin still bounds (the Task can still finish on
-                # its own).
-                pass
+        # ``self`` bound to THIS Connection. The actual per-conn
+        # scan was extracted into ``_drain_inbound_dispatch`` so
+        # the quarantine path (see
+        # docs/DESIGN_INBOUND_BACKPRESSURE.md) can reuse the same
+        # implementation.
+        self._drain_inbound_dispatch()
         self._local_objects.clear()
         self._proxy_cache.clear()
         self._netref_classes_cache.clear()
@@ -2242,12 +2363,35 @@ class Connection(object):
                 # the wrong thread is safe — it just constructs a
                 # coroutine object; no awaits happen until the loop
                 # actually starts driving it.
+                # ─── Per-Connection inbound backpressure ─────────
+                # See docs/DESIGN_INBOUND_BACKPRESSURE.md. Once a
+                # Connection has crossed ``max_inbound_inflight``
+                # parked dispatch tasks, it enters terminal
+                # quarantine and we silently drop every further
+                # MSG_REQUEST on this channel. This protects an
+                # agent from a malformed client that keeps pumping
+                # requests while ignoring our callbacks (observed in
+                # a downstream application, 12.88 GB
+                # RSS in 73 min before manual kill).
+                if self._inbound_quarantined:
+                    return
+                _max_inflight = self._config.get("max_inbound_inflight", 0)
+                if _max_inflight and self._inbound_inflight >= _max_inflight:
+                    self._enter_inbound_quarantine()
+                    return
+
                 _coro = self._dispatch_request_async(seq, args)
 
-                def _schedule(_coro=_coro):
+                def _schedule(_coro=_coro, _self=self):
                     task = asyncio.get_event_loop().create_task(_coro)
                     _DISPATCH_INFLIGHT.add(task)
-                    task.add_done_callback(_DISPATCH_INFLIGHT.discard)
+                    _self._inbound_inflight += 1
+
+                    def _on_done(_t, _self=_self):
+                        _DISPATCH_INFLIGHT.discard(_t)
+                        _self._inbound_inflight -= 1
+
+                    task.add_done_callback(_on_done)
 
                 self._asyncio_loop.call_soon_threadsafe(_schedule)
                 # Returns immediately - does NOT block!
