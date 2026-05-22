@@ -105,6 +105,15 @@ DEFAULT_CONFIG = dict(
     # logged. 0 disables the cap (legacy behaviour). See
     # docs/DESIGN_INBOUND_BACKPRESSURE.md.
     max_inbound_inflight=10_000,
+    # Optional callback invoked once, when a Connection first enters inbound
+    # quarantine (crosses ``max_inbound_inflight``). Signature:
+    # ``on_inbound_quarantine(info: dict) -> None`` where info has keys
+    # ``connid``, ``peer``, ``inbound_inflight``, ``threshold``,
+    # ``request_callbacks``. Lets the host app surface a warning (log/UI)
+    # WITHOUT changing the connection's behavior. Default None (no-op).
+    # Must never raise — exceptions are swallowed so the dispatch path is
+    # never broken. See docs/DESIGN_INBOUND_BACKPRESSURE.md.
+    on_inbound_quarantine=None,
 )
 """
 The default configuration dictionary of the protocol. You can override these parameters
@@ -657,6 +666,23 @@ class Connection(object):
                 )
             except Exception:
                 # Logging must never break the dispatch path.
+                pass
+
+        # Optional host-app notification hook (e.g. surface a warning in a
+        # web UI). Fire-and-forget: must never break the dispatch path, so
+        # all exceptions are swallowed. The connection's behavior is
+        # unchanged whether or not a callback is configured.
+        on_quarantine = self._config.get("on_inbound_quarantine")
+        if on_quarantine is not None:
+            try:
+                on_quarantine({
+                    "connid": self._config.get("connid"),
+                    "peer": peer_repr,
+                    "inbound_inflight": inflight_snapshot,
+                    "threshold": self._config.get("max_inbound_inflight", 0),
+                    "request_callbacks": rcb_snapshot,
+                })
+            except Exception:
                 pass
 
         self._drain_inbound_dispatch()
