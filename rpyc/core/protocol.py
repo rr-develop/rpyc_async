@@ -982,27 +982,59 @@ class Connection(object):
 
         def on_readable():
             """Called when socket has data to read."""
-            # Read all available data (edge-triggered behavior)
-            while self._channel.poll(0):
+            # ── EOF / closed-stream guard (CRITICAL — DO NOT REMOVE) ──────
+            # The ``while self._channel.poll(0)`` condition below calls
+            # ``stream.poll() → stream.fileno()``, and on an ALREADY-CLOSED
+            # stream ``fileno()`` raises ``EOFError`` ("stream has been
+            # closed"). That exception is raised by the *while condition*,
+            # i.e. OUTSIDE the inner try, so it used to escape ``on_readable``
+            # entirely: asyncio logged "Exception in callback", ``self.close()``
+            # was NEVER reached, the reader stayed armed on the loop, and the
+            # loop immediately re-fired ``on_readable`` → instant re-raise → a
+            # tight log-spamming livelock that wrote ~1.7 GB in minutes
+            # (observed in a downstream application log storm).
+            #
+            # So the WHOLE poll/recv loop is wrapped: any EOFError — whether
+            # from poll() (the condition) or recv() (the body) — closes the
+            # connection. ``self.close()`` → ``disable_asyncio_serving`` →
+            # ``loop.remove_reader``, so the reader comes OFF the loop and can
+            # never re-fire. This is the only thing that stops the storm.
+            try:
+                # Read all available data (edge-triggered behavior)
+                while self._channel.poll(0):
+                    try:
+                        data = self._channel.recv()
+                        if self._config.get("logger"):
+                            self._config["logger"].debug(f"[enable_asyncio_serving] Received data, dispatching...")
+                        self._dispatch(data)
+                        # Notify any threads waiting in serve()
+                        with self._recv_event:
+                            self._recv_event.notify_all()
+                    except EOFError:
+                        if self._config.get("logger"):
+                            self._config["logger"].debug(f"[enable_asyncio_serving] EOF, closing connection")
+                        self.close()
+                        break
+                    except Exception:
+                        # Log and continue
+                        if self._config.get("logger"):
+                            self._config["logger"].exception(
+                                "Error in async dispatch"
+                            )
+            except EOFError:
+                # EOF from the poll() condition itself: the stream is closed.
+                # Close once (idempotent) to remove the reader, then return —
+                # NEVER let this escape, or the reader stays armed and storms.
+                if self._config.get("logger"):
+                    self._config["logger"].debug(
+                        "[enable_asyncio_serving] EOF from poll(); closing connection"
+                    )
                 try:
-                    data = self._channel.recv()
-                    if self._config.get("logger"):
-                        self._config["logger"].debug(f"[enable_asyncio_serving] Received data, dispatching...")
-                    self._dispatch(data)
-                    # Notify any threads waiting in serve()
-                    with self._recv_event:
-                        self._recv_event.notify_all()
-                except EOFError:
-                    if self._config.get("logger"):
-                        self._config["logger"].debug(f"[enable_asyncio_serving] EOF, closing connection")
                     self.close()
-                    break
                 except Exception:
-                    # Log and continue
-                    if self._config.get("logger"):
-                        self._config["logger"].exception(
-                            "Error in async dispatch"
-                        )
+                    # close() must not turn a benign EOF into an escaping
+                    # exception (which would re-arm the storm).
+                    pass
 
         loop.add_reader(fd, on_readable)
         self._loop_fd_registered = True
