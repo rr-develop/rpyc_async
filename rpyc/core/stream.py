@@ -112,11 +112,26 @@ ClosedFile = ClosedFile()
 class SocketStream(Stream):
     """A stream over a socket"""
 
-    __slots__ = ("sock",)
+    # ``_on_close`` binds external resources (e.g. an asyncio ``add_reader``
+    # registration) to the SOCKET's lifetime. It fires inside ``close()``
+    # BEFORE the fd is released, so a listener can unregister the fd while it
+    # is still valid. This is what stops the asyncio reader from outliving its
+    # socket and spinning on a recycled fd — see a related internal
+    # incident analysis (not included here) and
+    # docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
+    __slots__ = ("sock", "_on_close")
     MAX_IO_CHUNK = STREAM_CHUNK
 
     def __init__(self, sock):
         self.sock = sock
+        self._on_close = None
+
+    def set_close_callback(self, callback):
+        """Register a single hook fired once, from within ``close()``, BEFORE
+        the underlying fd is released. Used to unregister an asyncio reader
+        bound to this socket's fd while the fd is still valid. ``None`` clears
+        it. Replaces any previously-set hook."""
+        self._on_close = callback
 
     @classmethod
     def _connect(cls, host, port, family=socket.AF_INET, socktype=socket.SOCK_STREAM,
@@ -242,6 +257,18 @@ class SocketStream(Stream):
         return self.sock is ClosedFile
 
     def close(self):
+        # Fire the close hook FIRST, while ``self.sock`` is still the real
+        # socket and its fd is still valid — an asyncio reader bound to this
+        # fd must be unregistered BEFORE the fd is released, otherwise the
+        # freed fd can be recycled (e.g. by uvicorn's transport, same loop)
+        # and the orphaned reader spins forever. The hook is best-effort and
+        # one-shot; never let it block or break socket teardown.
+        cb, self._on_close = self._on_close, None
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass
         if not self.closed:
             try:
                 self.sock.shutdown(socket.SHUT_RDWR)

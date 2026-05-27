@@ -276,3 +276,45 @@ an in-memory buffer, and removes the reader on EOF is strictly correct and
 **spends zero CPU when idle or half-closed**. The `poll(0)`/`while poll`
 constructs exist only to support a blocking frame-synchronous read inside an
 async callback; replacing that read removes them entirely.
+
+---
+
+## 8. Reader lifetime is bound to the socket (FD-reuse spin)
+
+A second spin surfaced AFTER the buffered reader landed, with a different root
+cause — see a related internal incident analysis (not included here).
+
+**Problem.** The socket layer (`SocketStream.close()` → `sock.close()`) and the
+reader registration (`disable_asyncio_serving` → `loop.remove_reader`) lived in
+separate layers with no link. Any close path that bypassed
+`Connection._cleanup` — a raw `stream.close()`, or simply dropping the last
+external reference (the Connection can't be GC'd because the cycle
+`loop → on_readable → Connection` pins it, so `__del__` never runs) — freed the
+fd while the reader stayed armed. In a shared-loop process (uvicorn + rpyc on
+one event loop, one fd table) the freed fd is recycled by uvicorn's own
+transport; the orphaned reader then fires on a foreign fd and
+`loop.remove_reader` raises `RuntimeError('fd is used by transport')` forever →
+a fresh ~43k-epoll/sec, zero-recv busy-loop. (uvloop can even SIGSEGV on the
+stale-reader/transport collision.)
+
+**Rule.** *Closing the socket MUST unregister the reader, synchronously, while
+the fd is still valid — no matter how the socket is closed.* Reader lifetime is
+bound to the socket, not to the Connection close path.
+
+**Mechanism.**
+- `SocketStream` exposes `set_close_callback(cb)`; `close()` fires it FIRST,
+  before `shutdown()`/`sock.close()`, so the listener unregisters the fd while
+  it is still ours.
+- `enable_asyncio_serving` registers `self._unregister_reader` as that hook.
+- `_unregister_reader` is the single, idempotent removal primitive; it swallows
+  EVERY `remove_reader` error including uvloop's `RuntimeError('used by
+  transport')` — that error must NEVER reach the hot path.
+- `on_readable` self-defends: `if self._closed or self._channel.closed:
+  _unregister_reader(); return` — it never `recv`s a possibly-recycled fd.
+- `async_connect`'s outer error handler tears the half-built Connection down
+  via `disable_asyncio_serving` (not just `sock.close()`), closing the
+  connect-time leak.
+
+🚫 DO NOT close a SocketStream's fd on the asyncio path without going through a
+reader-unregister. DO NOT narrow `_unregister_reader`'s `except` to specific
+exception types — uvloop's transport-collision `RuntimeError` must stay caught.

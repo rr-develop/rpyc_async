@@ -935,6 +935,37 @@ class Connection(object):
     # any PR that adds ``await asyncio.sleep(...)`` inside a loop here.
     # ═══════════════════════════════════════════════════════════════
 
+    def _unregister_reader(self):
+        """Take the async reader OFF the event loop. Idempotent, never raises.
+
+        ═══════════════════════════════════════════════════════════════════
+        🚫 NO BUSY-LOOP (AsyncioServer policy) 🚫
+        This is the single primitive that severs the
+        ``loop -> on_readable -> self`` reference cycle. It MUST tolerate
+        being called from anywhere — including the socket's close hook
+        (``SocketStream._on_close``), which fires while the fd is still valid.
+
+        We swallow EVERY exception from ``remove_reader``, in particular
+        uvloop's ``RuntimeError('File descriptor N is used by transport ...')``
+        which is raised when the fd was already recycled by another transport.
+        Letting it escape would re-introduce the spin. See a related
+        internal incident analysis (not included here).
+        """
+        loop = self._asyncio_loop
+        fd = self._registered_fd
+        # Mark unregistered up-front so re-entrancy (close hook + cleanup) is a
+        # no-op the second time.
+        self._loop_fd_registered = False
+        self._registered_fd = None
+        if loop is not None and fd is not None:
+            try:
+                loop.remove_reader(fd)
+            except Exception:
+                # ValueError/OSError (already gone) OR uvloop RuntimeError
+                # ('used by transport', fd recycled). Either way, nothing more
+                # we can safely do — never propagate into the close path.
+                pass
+
     def _close_and_remove_reader(self):
         """Take the async reader OFF the event loop, then close the connection.
 
@@ -949,13 +980,7 @@ class Connection(object):
         docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
         ═══════════════════════════════════════════════════════════════════
         """
-        if self._asyncio_loop is not None and self._registered_fd is not None:
-            try:
-                self._asyncio_loop.remove_reader(self._registered_fd)
-            except Exception:
-                pass
-            self._loop_fd_registered = False
-            self._registered_fd = None
+        self._unregister_reader()
         try:
             self.close()
         except Exception:
@@ -1080,6 +1105,18 @@ class Connection(object):
             On EOF / hard error the reader removes ITSELF from the loop
             (``_close_and_remove_reader``) so it can never re-fire.
             """
+            # ── SELF-DEFENSE: never read a closed/recycled fd blindly ───────
+            # If the stream is already closed, our captured fd may have been
+            # released and RECYCLED by another transport (uvicorn, same loop).
+            # Reading it would touch a foreign socket; the loop firing us at all
+            # means our reader leaked. Disarm by saved fd and return — do NOT
+            # call recv on the foreign fd. The close hook should already have
+            # unregistered us; this is the belt-and-braces guard so we can
+            # never spin even if the hook was bypassed. See a related
+            # internal incident analysis (not included here).
+            if self._closed or self._channel.closed:
+                self._unregister_reader()
+                return
             try:
                 chunk = self._channel.stream.recv_available()
             except EOFError:
@@ -1133,6 +1170,27 @@ class Connection(object):
         self._registered_fd = fd  # Save FD for cleanup
 
         # ═══════════════════════════════════════════════════════════════
+        # BIND THE READER'S LIFETIME TO THE SOCKET (FD-reuse spin fix).
+        # The socket layer and the reader registration used to
+        # live in separate layers with no link: ANY close path that bypassed
+        # Connection._cleanup (a raw stream.close(), a dropped reference whose
+        # __del__ never runs because the loop->callback->conn cycle pins it)
+        # freed the fd while the reader stayed armed. The freed fd then got
+        # recycled by uvicorn's own transport, and the orphaned reader spun at
+        # ~100% CPU because remove_reader raised 'fd is used by transport'.
+        #
+        # The hook fires from INSIDE SocketStream.close(), BEFORE the fd is
+        # released, so we always unregister while the fd is still ours. This
+        # makes "socket closed" => "reader removed" an invariant, no matter how
+        # the socket is closed. See a related internal incident analysis.
+        try:
+            self._channel.stream.set_close_callback(self._unregister_reader)
+        except AttributeError:
+            # Non-socket streams (pipes, in-memory) may not support the hook;
+            # they are not exposed to the uvicorn fd-reuse hazard.
+            pass
+
+        # ═══════════════════════════════════════════════════════════════
         # NEW (v5.2): Start background cleanup task
         # ═══════════════════════════════════════════════════════════════
         self._start_cleanup_task()
@@ -1150,15 +1208,17 @@ class Connection(object):
         if not self._asyncio_enabled:
             return
 
-        if self._loop_fd_registered and self._asyncio_loop and self._registered_fd is not None:
-            # Use saved FD instead of fileno() which may fail if stream is closed
-            try:
-                self._asyncio_loop.remove_reader(self._registered_fd)
-            except Exception:
-                # Ignore errors - FD may already be removed or closed
-                pass
-            self._loop_fd_registered = False
-            self._registered_fd = None
+        # Single source of truth for taking the reader off the loop (idempotent,
+        # swallows uvloop's 'fd used by transport' RuntimeError). See
+        # _unregister_reader / a related internal incident analysis.
+        self._unregister_reader()
+
+        # Clear the socket close hook so a later stream.close() does not call
+        # back into an already-disabled connection (and to break the ref).
+        try:
+            self._channel.stream.set_close_callback(None)
+        except AttributeError:
+            pass
 
         self._asyncio_enabled = False
         self._asyncio_loop = None

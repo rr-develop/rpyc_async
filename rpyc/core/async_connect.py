@@ -97,6 +97,12 @@ async def async_connect(
     sock = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM)
     sock.setblocking(False)
 
+    # Sentinel so the outer error handler can tear down a half-built Connection
+    # (and, critically, UNREGISTER its asyncio reader) instead of just closing
+    # the raw socket — which would leak the add_reader and let the freed fd be
+    # recycled into a 100%-CPU spin. See a related internal incident analysis.
+    conn = None
+
     try:
         # Async TCP connection - NO BLOCKING!
         try:
@@ -175,7 +181,21 @@ async def async_connect(
         return conn
 
     except Exception:
-        # Ensure socket is closed on any error
+        # On ANY failure after enable_asyncio_serving(), the connection may have
+        # an armed add_reader. Tear it down through the Connection so the reader
+        # is unregistered (disable_asyncio_serving) BEFORE the fd is released —
+        # otherwise the reader leaks and the freed fd can be recycled into a
+        # 100%-CPU spin. Fall back to closing the raw socket only if no conn was
+        # built yet. See a related internal incident analysis.
+        if conn is not None:
+            try:
+                conn.disable_asyncio_serving()
+            except Exception:
+                pass
+            try:
+                conn._cleanup(_anyway=True)
+            except Exception:
+                pass
         try:
             sock.close()
         except Exception:
