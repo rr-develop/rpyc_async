@@ -25,6 +25,7 @@ import ast
 import asyncio
 import inspect
 import re
+import textwrap
 import unittest
 from unittest import mock
 
@@ -276,6 +277,89 @@ class TestServeConnectionDoesNotBurnCPU(unittest.IsolatedAsyncioTestCase):
             [],
             f"_serve_connection called asyncio.sleep {len(sleep_calls)} time(s) "
             f"while waiting for close ({sleep_calls!r}). Polling is forbidden.",
+        )
+
+
+class TestAsyncReaderHasNoPolling(unittest.TestCase):
+    """Static guard for the asyncio READ path (``enable_asyncio_serving`` and
+    its nested ``on_readable``). These MUST be purely event-driven: one
+    non-blocking ``recv_available()`` per ``add_reader`` wakeup + in-memory
+    framing. Re-introducing a socket poll here brings back the 99.9%-CPU
+    half-closed-socket busy-loop (observed in a downstream application).
+    See docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
+    """
+
+    def _read_path_ast(self) -> ast.AST:
+        # enable_asyncio_serving defines on_readable nested inside it, so its
+        # AST covers the whole async read callback. We scan the AST (not text)
+        # so that DOCSTRING/COMMENT mentions of "poll"/"MSG_PEEK" — which the
+        # banner intentionally contains — are NOT flagged; only real
+        # calls/names are.
+        src = textwrap.dedent(
+            inspect.getsource(protocol.Connection.enable_asyncio_serving)
+        )
+        return ast.parse(src)
+
+    def _called_attrs(self, tree: ast.AST) -> list[str]:
+        """Names of attribute-style calls in the AST, e.g. 'poll' for x.poll()."""
+        out = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                out.append(node.func.attr)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                out.append(node.func.id)
+        return out
+
+    def _names_used(self, tree: ast.AST) -> set[str]:
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            if isinstance(node, ast.Attribute):
+                names.add(node.attr)
+        return names
+
+    def test_no_poll_call_in_async_reader(self) -> None:
+        calls = self._called_attrs(self._read_path_ast())
+        self.assertNotIn(
+            "poll", calls,
+            "the asyncio read path CALLS poll(...) — POLLING is forbidden. "
+            "Read once via recv_available() and frame from the buffer "
+            "(_extract_frames); never poll the socket. "
+            "See docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.",
+        )
+        self.assertNotIn(
+            "select", calls,
+            "select(...) is polling — forbidden on the async read path.",
+        )
+
+    def test_no_while_poll_drain_loop(self) -> None:
+        """No ``while``/``for`` loop in the reader whose test/body calls
+        poll() — that is the busy-loop shape."""
+        tree = self._read_path_ast()
+        for loop in ast.walk(tree):
+            if isinstance(loop, (ast.While, ast.For, ast.AsyncFor)):
+                self.assertNotIn(
+                    "poll", self._called_attrs(loop),
+                    "the asyncio read path has a loop that calls poll(...) — "
+                    "that is the drain busy-loop. Use one recv_available() + "
+                    "in-memory framing.",
+                )
+
+    def test_no_msg_peek_name_in_async_reader(self) -> None:
+        names = self._names_used(self._read_path_ast())
+        self.assertNotIn(
+            "MSG_PEEK", names,
+            "MSG_PEEK probing is a polling band-aid — forbidden on the async "
+            "read path; recv_available() distinguishes EOF/EAGAIN cleanly.",
+        )
+
+    def test_reader_uses_recv_available(self) -> None:
+        """Positive assertion: the event-driven primitive IS called."""
+        self.assertIn(
+            "recv_available", self._called_attrs(self._read_path_ast()),
+            "the asyncio read path must read via the non-blocking, "
+            "single-shot recv_available() (the event-driven primitive).",
         )
 
 

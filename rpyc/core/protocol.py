@@ -510,6 +510,12 @@ class Connection(object):
         self._asyncio_enabled = False       # Async serving enabled?
         self._loop_fd_registered = False    # FD registered in loop?
         self._registered_fd = None          # Saved FD for cleanup
+        # Inbound byte buffer for the EVENT-DRIVEN async reader. The
+        # add_reader callback appends one non-blocking recv() worth of bytes
+        # here and ``_extract_frames`` carves whole rpyc frames from it in
+        # memory — so the reader NEVER polls the socket. See
+        # docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
+        self._async_inbuf = bytearray()
         # ═══════════════════════════════════════════════════════════════
         # Event-driven close notification (v5.3 - NO POLLING POLICY)
         # ═══════════════════════════════════════════════════════════════
@@ -929,6 +935,71 @@ class Connection(object):
     # any PR that adds ``await asyncio.sleep(...)`` inside a loop here.
     # ═══════════════════════════════════════════════════════════════
 
+    def _close_and_remove_reader(self):
+        """Take the async reader OFF the event loop, then close the connection.
+
+        ═══════════════════════════════════════════════════════════════════
+        🚫 NO BUSY-LOOP (AsyncioServer policy) 🚫
+        Removing the reader is THE event-driven act that stops the loop firing
+        ``on_readable``. We do it FIRST and UNCONDITIONALLY — independent of
+        ``self._closed`` — because a half-closed fd's reader must come off the
+        loop even when a prior ``close()`` already ran and is now a no-op. A
+        reader that outlives a no-op ``close()`` is exactly the live spin we
+        saw (observed in a downstream application). See
+        docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
+        ═══════════════════════════════════════════════════════════════════
+        """
+        if self._asyncio_loop is not None and self._registered_fd is not None:
+            try:
+                self._asyncio_loop.remove_reader(self._registered_fd)
+            except Exception:
+                pass
+            self._loop_fd_registered = False
+            self._registered_fd = None
+        try:
+            self.close()
+        except Exception:
+            # close() must never turn a benign EOF into an escaping exception
+            # (which asyncio would log and which could re-arm the reader).
+            pass
+
+    def _extract_frames(self, chunk):
+        """Append ``chunk`` to the inbound buffer and return every COMPLETE
+        rpyc frame's payload now available; partial remainder stays buffered.
+
+        ═══════════════════════════════════════════════════════════════════
+        🚫 NO POLLING / NO BUSY-LOOP (AsyncioServer policy) 🚫
+        This is pure in-memory framing. It does NOT touch the socket, does NOT
+        call ``poll``/``select``/``recv``, and is the reason the async reader
+        needs no ``poll(0)`` / ``while poll(...)`` drain. A frame is fully
+        self-delimiting: ``FRAME_HEADER (5) + length + FLUSHER (1)`` bytes with
+        ``length`` carried in the header, so "do I have a whole frame?" is
+        answered from the buffer alone. See
+        docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
+        ═══════════════════════════════════════════════════════════════════
+        """
+        import zlib  # noqa: PLC0415
+        from rpyc.core.channel import Channel  # noqa: PLC0415
+
+        if chunk:
+            self._async_inbuf += chunk
+
+        hdr_size = Channel.FRAME_HEADER.size
+        flush_size = len(Channel.FLUSHER)
+        frames = []
+        buf = self._async_inbuf
+        while len(buf) >= hdr_size:
+            length, compressed = Channel.FRAME_HEADER.unpack_from(buf, 0)
+            total = hdr_size + length + flush_size
+            if len(buf) < total:
+                break  # frame not fully arrived yet — wait for the next event
+            payload = bytes(buf[hdr_size:hdr_size + length])
+            del buf[:total]  # drop header + payload + FLUSHER from the buffer
+            if compressed:
+                payload = zlib.decompress(payload)
+            frames.append(payload)
+        return frames
+
     def enable_asyncio_serving(self, loop=None):
         """
         Enable asyncio-native serving for this connection.
@@ -981,60 +1052,81 @@ class Connection(object):
             pass
 
         def on_readable():
-            """Called when socket has data to read."""
-            # ── EOF / closed-stream guard (CRITICAL — DO NOT REMOVE) ──────
-            # The ``while self._channel.poll(0)`` condition below calls
-            # ``stream.poll() → stream.fileno()``, and on an ALREADY-CLOSED
-            # stream ``fileno()`` raises ``EOFError`` ("stream has been
-            # closed"). That exception is raised by the *while condition*,
-            # i.e. OUTSIDE the inner try, so it used to escape ``on_readable``
-            # entirely: asyncio logged "Exception in callback", ``self.close()``
-            # was NEVER reached, the reader stayed armed on the loop, and the
-            # loop immediately re-fired ``on_readable`` → instant re-raise → a
-            # tight log-spamming livelock that wrote ~1.7 GB in minutes
-            # (observed in a downstream application log storm).
-            #
-            # So the WHOLE poll/recv loop is wrapped: any EOFError — whether
-            # from poll() (the condition) or recv() (the body) — closes the
-            # connection. ``self.close()`` → ``disable_asyncio_serving`` →
-            # ``loop.remove_reader``, so the reader comes OFF the loop and can
-            # never re-fire. This is the only thing that stops the storm.
+            """``loop.add_reader`` callback — fires when the fd is readable.
+
+            ═══════════════════════════════════════════════════════════════
+            🚫🚫🚫  NO POLLING / NO BUSY-LOOP — STRICT, NON-NEGOTIABLE  🚫🚫🚫
+            ═══════════════════════════════════════════════════════════════
+            This callback is the heart of the AsyncioServer read path. It is
+            EVENT-DRIVEN: ``loop.add_reader`` already IS the "fd is readable"
+            event. Therefore this callback:
+
+              * does ONE non-blocking ``recv_available()`` per wakeup, then
+              * carves whole frames from an IN-MEMORY buffer
+                (``_extract_frames``), then
+              * returns. A partial frame waits in the buffer for the NEXT real
+                readable event.
+
+            ❌ DO NOT add ``self._channel.poll(0)`` / ``stream.poll(...)``.
+            ❌ DO NOT add a ``while <readable>:`` drain loop.
+            ❌ DO NOT add ``select(...)`` / ``MSG_PEEK`` probing.
+            Any of those re-introduce the 99.9%-CPU busy-loop: a half-closed
+            socket (CLOSE-WAIT, pending EOF) is *permanently* readable to
+            epoll, so re-asking the OS "is there more?" spins the core forever
+            (observed in a downstream application: 34k epoll wakeups/sec,
+            ZERO recv syscalls). The whole point of this rewrite is to NEVER ask.
+            See docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
+
+            On EOF / hard error the reader removes ITSELF from the loop
+            (``_close_and_remove_reader``) so it can never re-fire.
+            """
             try:
-                # Read all available data (edge-triggered behavior)
-                while self._channel.poll(0):
-                    try:
-                        data = self._channel.recv()
-                        if self._config.get("logger"):
-                            self._config["logger"].debug(f"[enable_asyncio_serving] Received data, dispatching...")
-                        self._dispatch(data)
-                        # Notify any threads waiting in serve()
-                        with self._recv_event:
-                            self._recv_event.notify_all()
-                    except EOFError:
-                        if self._config.get("logger"):
-                            self._config["logger"].debug(f"[enable_asyncio_serving] EOF, closing connection")
-                        self.close()
-                        break
-                    except Exception:
-                        # Log and continue
-                        if self._config.get("logger"):
-                            self._config["logger"].exception(
-                                "Error in async dispatch"
-                            )
+                chunk = self._channel.stream.recv_available()
             except EOFError:
-                # EOF from the poll() condition itself: the stream is closed.
-                # Close once (idempotent) to remove the reader, then return —
-                # NEVER let this escape, or the reader stays armed and storms.
+                # Hard socket error / dead connection → take the reader off
+                # the loop and close. (Never raise out of an add_reader cb, or
+                # asyncio logs it and the reader stays armed → storm.)
                 if self._config.get("logger"):
                     self._config["logger"].debug(
-                        "[enable_asyncio_serving] EOF from poll(); closing connection"
+                        "[enable_asyncio_serving] recv error/EOF; closing"
                     )
+                self._close_and_remove_reader()
+                return
+
+            if chunk is None:
+                # EAGAIN / spurious wakeup: NOTHING readable right now. Just
+                # return. This is NOT a spin — a healthy fd only re-fires when
+                # real data arrives; we must NOT close (that kills live conns)
+                # and must NOT poll.
+                return
+
+            if chunk == b"":
+                # Orderly EOF: the peer closed its write end. Remove the reader
+                # and close so the half-closed fd can never re-fire.
+                if self._config.get("logger"):
+                    self._config["logger"].debug(
+                        "[enable_asyncio_serving] peer EOF; closing"
+                    )
+                self._close_and_remove_reader()
+                return
+
+            # Real data: buffer it and dispatch every COMPLETE frame. Pure
+            # in-memory framing — no socket access, no poll.
+            for frame in self._extract_frames(chunk):
                 try:
-                    self.close()
+                    self._dispatch(frame)
+                    with self._recv_event:
+                        self._recv_event.notify_all()
+                except EOFError:
+                    self._close_and_remove_reader()
+                    return
                 except Exception:
-                    # close() must not turn a benign EOF into an escaping
-                    # exception (which would re-arm the storm).
-                    pass
+                    # A per-frame dispatch error must not kill the reader or
+                    # spin; log and move on to the next already-framed packet.
+                    if self._config.get("logger"):
+                        self._config["logger"].exception(
+                            "Error dispatching a framed async message"
+                        )
 
         loop.add_reader(fd, on_readable)
         self._loop_fd_registered = True

@@ -1,89 +1,56 @@
-"""Regression: ``on_readable`` must not livelock-log when the stream closes.
+"""Regression: ``on_readable`` must not livelock/log-storm when the stream
+closes, and must take its reader OFF the loop on EOF.
 
-Incident (a downstream application log storm): ~1.7 GB of
-``EOFError: stream has been closed`` written to the server log within
-minutes (three full 512 MB log rotations in ~6 min).
+Two historical incidents this guards (both observed in a downstream application):
 
-Root cause: in ``Connection.enable_asyncio_serving`` the reader callback is
+  * ~1.7 GB of ``EOFError: stream has been closed`` written in
+    minutes. The OLD poll-based reader let an EOFError from the ``while
+    self._channel.poll(0)`` CONDITION escape the callback; ``close()`` was
+    never reached, the reader stayed armed, asyncio re-fired it instantly →
+    a tight log-spamming livelock.
+  * 99.9% CPU. A half-closed inbound socket (CLOSE-WAIT, pending
+    EOF) is *permanently* readable to epoll; the poll-based reader spun
+    ~34 000×/sec issuing ZERO recv syscalls.
 
-    def on_readable():
-        while self._channel.poll(0):     # <-- condition
-            try:
-                data = self._channel.recv()
-                ...
-            except EOFError:
-                self.close()
-                break
+Both are fixed by the EVENT-DRIVEN, buffered, NO-POLL reader
+(DESIGN_NO_POLLING_ASYNCIO_READ.md): one non-blocking ``recv_available()`` per
+readable event, frame from an in-memory buffer, and ``_close_and_remove_reader``
+on EOF so the reader can never re-fire.
 
-When the underlying socket is already closed, ``stream.fileno()`` raises
-``EOFError`` — and ``poll()`` calls ``fileno()``. So the EOFError is raised by
-the ``while`` CONDITION, which is OUTSIDE the inner ``try``. It escapes
-``on_readable`` entirely, asyncio logs "Exception in callback", and crucially
-``self.close()`` is never reached — so the reader is NEVER removed from the
-loop. The loop keeps the fd armed, immediately re-fires ``on_readable``, which
-immediately raises again: a tight log-spamming livelock that only stops when
-the process is killed.
-
-The fix: an EOFError from ``poll()`` (the while condition) must be handled the
-same as one from ``recv()`` — close the connection (which calls
-``disable_asyncio_serving`` → ``loop.remove_reader``) and stop. The reader
-must come off the loop so it cannot re-fire.
+These tests use a REAL ``socketpair`` (NO mocks) — the only faithful way to
+exercise EOF / half-close behaviour.
 """
 
 from __future__ import annotations
 
 import asyncio
+import socket
 import unittest
 from typing import Any
 
+from rpyc.core.channel import Channel
 from rpyc.core.protocol import Connection
 from rpyc.core.service import VoidService
-
-
-class _ClosedStreamChannel:
-    """Channel whose ``poll()`` raises EOFError — exactly what a real
-    channel does once its stream is closed (``stream.poll`` →
-    ``stream.fileno`` → ``EOFError``)."""
-
-    def __init__(self) -> None:
-        self.closed = False
-        self.poll_calls = 0
-
-    def fileno(self) -> int:
-        return -1  # a harmless fd for add_reader registration
-
-    def poll(self, timeout: float) -> bool:
-        self.poll_calls += 1
-        raise EOFError("stream has been closed")
-
-    def recv(self) -> bytes:
-        raise EOFError("stream has been closed")
-
-    def send(self, data: bytes) -> None:
-        return None
-
-    def close(self) -> None:
-        self.closed = True
+from rpyc.core.stream import SocketStream
 
 
 class TestOnReadableEofStorm(unittest.IsolatedAsyncioTestCase):
-    async def _make_conn_capturing_reader(self) -> tuple[Connection, Any, dict]:
-        """Build a Connection on a closed-stream channel, capture the
-        ``on_readable`` callback that ``enable_asyncio_serving`` registers,
-        and record loop.add_reader / remove_reader activity."""
-        chan = _ClosedStreamChannel()
-        conn = Connection(VoidService(), chan, config={})
+    async def _arm_closed(self) -> tuple[Connection, Any, dict]:
+        """Build a Connection over a real socket whose peer has fully closed,
+        capture the registered reader + add/remove activity + close()."""
+        a, b = socket.socketpair()
+        self.addCleanup(self._safe_close, a)
+        b.close()  # peer GONE → 'a' will read EOF (b'') immediately
 
+        conn = Connection(VoidService(), Channel(SocketStream(a)), config={})
         loop = asyncio.get_running_loop()
-        state: dict = {"reader": None, "removed_fds": [], "added_fd": None}
+        state: dict[str, Any] = {"reader": None, "added_fd": None,
+                                 "removed_fds": [], "close_calls": 0}
+        real_add, real_remove = loop.add_reader, loop.remove_reader
 
-        real_add = loop.add_reader
-        real_remove = loop.remove_reader
-
-        def fake_add(fd, cb, *a):  # type: ignore[no-untyped-def]
+        def fake_add(fd, cb, *_a):  # type: ignore[no-untyped-def]
             state["added_fd"] = fd
             state["reader"] = cb
-            # Do NOT actually arm the loop on this bogus fd.
 
         def fake_remove(fd):  # type: ignore[no-untyped-def]
             state["removed_fds"].append(fd)
@@ -97,8 +64,7 @@ class TestOnReadableEofStorm(unittest.IsolatedAsyncioTestCase):
             loop.add_reader = real_add  # type: ignore[method-assign]
             loop.remove_reader = real_remove  # type: ignore[method-assign]
 
-        # Track close().
-        state["close_calls"] = 0
+        conn._dispatch = lambda data: None  # type: ignore[method-assign,assignment]
         orig_close = conn.close
 
         def counting_close():  # type: ignore[no-untyped-def]
@@ -106,36 +72,33 @@ class TestOnReadableEofStorm(unittest.IsolatedAsyncioTestCase):
             return orig_close()
 
         conn.close = counting_close  # type: ignore[method-assign]
-        return conn, chan, state
+        return conn, a, state
+
+    @staticmethod
+    def _safe_close(s: socket.socket) -> None:
+        try:
+            s.close()
+        except OSError:
+            pass
 
     async def test_on_readable_does_not_raise_on_closed_stream(self) -> None:
-        conn, chan, state = await self._make_conn_capturing_reader()
+        conn, _a, state = await self._arm_closed()
         reader = state["reader"]
         self.assertIsNotNone(reader, "enable_asyncio_serving must register a reader")
-
-        # Fire the reader exactly as the event loop would when the (now
-        # closed) fd reports readable. This MUST NOT raise — previously the
-        # EOFError from the while-condition escaped here.
+        # Firing on a fully-closed peer must NOT raise (the log storm
+        # was an EOFError escaping the callback).
         try:
             reader()
-        except EOFError:
-            self.fail(
-                "on_readable let an EOFError from poll() escape — this is "
-                "the log-storm livelock (observed in a downstream application)"
-            )
+        except Exception as exc:  # noqa: BLE001
+            self.fail(f"on_readable raised on a closed stream: {exc!r}")
 
     async def test_on_readable_closes_and_removes_reader_on_eof(self) -> None:
-        conn, chan, state = await self._make_conn_capturing_reader()
-        reader = state["reader"]
-
-        reader()
-
-        # The connection must have been closed (which removes the reader),
-        # so the loop can never re-fire the callback → no storm.
+        conn, _a, state = await self._arm_closed()
+        state["reader"]()
         self.assertGreaterEqual(
             state["close_calls"], 1,
-            "on_readable must close the connection when the stream is EOF, "
-            "so the reader is removed and cannot re-fire (no log storm)",
+            "on_readable must close the connection on EOF so the reader is "
+            "removed and cannot re-fire (no storm)",
         )
         self.assertIn(
             state["added_fd"], state["removed_fds"],
@@ -143,15 +106,15 @@ class TestOnReadableEofStorm(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_on_readable_is_idempotent_after_close(self) -> None:
-        """Even if the loop fires the stale reader once more before removal
-        propagates, a second call must still not raise."""
-        conn, chan, state = await self._make_conn_capturing_reader()
+        """Even if the loop fires the stale reader again before removal
+        propagates, a second call must not raise and must not spin."""
+        conn, _a, state = await self._arm_closed()
         reader = state["reader"]
         reader()
         try:
             reader()  # second spurious fire
-        except EOFError:
-            self.fail("second on_readable fire raised EOFError")
+        except Exception as exc:  # noqa: BLE001
+            self.fail(f"second on_readable fire raised: {exc!r}")
 
 
 if __name__ == "__main__":

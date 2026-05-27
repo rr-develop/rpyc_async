@@ -282,6 +282,45 @@ class SocketStream(Stream):
             count -= len(buf)
         return BYTES_LITERAL("").join(data)
 
+    def recv_available(self):
+        """Read whatever is in the socket buffer RIGHT NOW, in ONE
+        non-blocking ``recv`` — for the event-driven asyncio reader.
+
+        ═══════════════════════════════════════════════════════════════════
+        🚫 NO POLLING / NO BUSY-LOOP (AsyncioServer policy) 🚫
+        This is the read primitive that lets the async reader avoid
+        ``poll(0)`` entirely: it is invoked ONCE per ``loop.add_reader``
+        readiness event and decides from the RESULT, never by re-asking the
+        OS "is there more?". DO NOT add ``poll``/``select``/``MSG_PEEK`` here
+        or in its callers on the asyncio path. See
+        docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
+        ═══════════════════════════════════════════════════════════════════
+
+        Returns:
+            * non-empty ``bytes`` — data that was available;
+            * ``b""``            — peer closed its write end (real EOF);
+            * ``None``           — EAGAIN/EWOULDBLOCK: nothing readable right
+              now (a benign/spurious wakeup — caller must just return, NOT
+              spin and NOT close).
+
+        Raises:
+            EOFError — a hard socket error (the connection is dead). The
+            stream is closed before raising.
+        """
+        try:
+            self.sock.setblocking(False)
+            return self.sock.recv(self.MAX_IO_CHUNK)
+        except (BlockingIOError, InterruptedError):
+            return None
+        except socket.timeout:
+            return None
+        except (socket.error, OSError):
+            ex = sys.exc_info()[1]
+            if get_exc_errno(ex) in retry_errnos:
+                return None
+            self.close()
+            raise EOFError(ex)
+
     def write(self, data):
         try:
             while data:
