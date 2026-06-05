@@ -1526,6 +1526,49 @@ class Connection(object):
         (to batch multiple deletions of same object), checks for resurrection,
         and sends HANDLE_DEL with acknowledgment.
         """
+        # ═══════════════════════════════════════════════════════════════
+        # Closed-connection fast-path — see
+        # docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md and a related
+        # internal incident analysis (not included here).
+        #
+        # If the peer is gone, HANDLE_DEL cannot succeed: every send
+        # times out and the cleanup loop, called on every netref __del__
+        # for the rest of the process lifetime, emits two log lines
+        # per failed deletion. In production this produced 128 MB
+        # stderr logs (7080× identical id_pack in a single agent log).
+        #
+        # Correct behaviour on a closed conn:
+        #   1. Do NOT attempt to send — the peer process is gone,
+        #      so what we fail to send cannot leak.
+        #   2. Drain the queue — otherwise enqueued deletions
+        #      accumulate forever as new netrefs are GC'd against
+        #      the (still-referenced) dead Connection object.
+        #   3. Emit ONE logger.debug summary with the dropped count
+        #      for observability. The ``if dropped:`` guard makes
+        #      subsequent cleanup_loop iterations on the already-
+        #      drained queue silent.
+        #
+        # Sync close-time drain (_process_pending_deletions_sync,
+        # called at line 772 of close()) runs BEFORE self._closed is
+        # flipped via _cleanup, so the last-chance flush is unaffected.
+        # ═══════════════════════════════════════════════════════════════
+        if self.closed:
+            dropped = 0
+            while True:
+                try:
+                    self._pending_deletions.get_nowait()
+                    dropped += 1
+                except Exception:
+                    break  # queue.Empty (or torn-down queue) — done
+            if dropped:
+                logger = self._config.get("logger")
+                if logger:
+                    logger.debug(
+                        "Dropping %d pending HANDLE_DELs on closed "
+                        "connection (peer is gone)", dropped
+                    )
+            return
+
         # Collect all pending deletions from queue (non-blocking)
         batch: List[Tuple[Tuple[str, int, int], int]] = []
         while not self._pending_deletions.empty():
@@ -1586,6 +1629,15 @@ class Connection(object):
                 # workaround here; the invariant is "reply is a
                 # primitive".
                 if not result:
+                    # Belt-and-braces race guard: connection may have
+                    # closed *between* batch-collect and the await above
+                    # (peer disconnect during _async_request_with_ack).
+                    # In that case the top-of-function guard didn't
+                    # fire, but we still must not emit the storm
+                    # warning — peer is already gone. See
+                    # docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md §4.3.
+                    if self.closed:
+                        continue
                     # ═══════════════════════════════════════════════════════════════
                     # CRITICAL: DO NOT REMOVE OR MODIFY THIS LOGGING!
                     # ═══════════════════════════════════════════════════════════════
