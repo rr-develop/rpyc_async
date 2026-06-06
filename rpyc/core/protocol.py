@@ -200,7 +200,7 @@ _connection_id_generator = itertools.count(1)
 # to the Task that ``run_coroutine_threadsafe`` schedules, a GC cycle
 # can collect that Task while it is still parked on an inner ``await``.
 #
-# Production failure mode (observed in a downstream application, 12.1 GB
+# Production failure mode (a downstream application, 12.1 GB
 # RSS in 3 days):
 #
 #   1. Inbound MSG_REQUEST arrives. ``_dispatch`` schedules
@@ -228,7 +228,7 @@ _connection_id_generator = itertools.count(1)
 #      alive externally by the half-collected dispatch task's
 #      bookkeeping inside asyncio.
 #   5. Steady-state bidirectional traffic accumulates ~1 AR chain per
-#      lost dispatch task. The affected production process had
+#      lost dispatch task. The production process had
 #      1 941 735 leaked chains pinning ~10.7 GB of pymalloc heap.
 #
 # The fix:
@@ -277,11 +277,11 @@ _connection_id_generator = itertools.count(1)
 #     a parked dispatch task is in it, a finished dispatch task is
 #     not.
 #   * tests/test_dispatch_task_leak_on_disconnect.py — the
-#     earlier regression test that the same bug had been
+#     regression test that the same bug had been
 #     diagnosed at originally; this fix is what makes it green.
 #
-# Investigation report: a related internal incident analysis
-# (not included here).
+# Investigation report: a related internal incident analysis (not
+# included here).
 _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 
 
@@ -318,7 +318,7 @@ _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 # HANDLE_DEL entries still queued in ``self._pending_deletions``
 # are silently dropped → remote netrefs LEAK on the peer.
 #
-# Production failure (observed in a downstream application): the log
+# Production failure: the log
 # captured the canonical signature:
 #
 #   asyncio - ERROR - Task was destroyed but it is pending!
@@ -327,7 +327,7 @@ _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 #                  running at rpyc/core/protocol.py:939>
 #          wait_for=<Future pending cb=[Task.task_wakeup()]>>
 #   WARNING: Failed to delete remote object
-#            (a remote service netref). Possible memory leak on
+#            ('...<remote service netref>', ...). Possible memory leak on
 #            remote side.
 #
 # The fix has TWO halves and either half alone is broken:
@@ -435,7 +435,7 @@ class Connection(object):
         # (the receive-side shortcut in ``_unbox(LABEL_REMOTE_REF)``
         # then resolved peer id_packs to the receiver's own local,
         # producing infinite ping-pong callbacks — the 10 GB/6 min leak
-        # reported in a downstream application).
+        # reported in production).
         #
         # Starting the seq at ``(pid << 32) + 1`` makes two LIVE peers'
         # seq ranges disjoint by kernel guarantee: the kernel never
@@ -479,8 +479,8 @@ class Connection(object):
         # ``tb_frame``'s ``f_locals`` for the lifetime of the
         # Connection, which on a busy bidirectional-async
         # deployment cascades into a multi-GB AsyncResult retention
-        # leak — see a related internal incident analysis (not
-        # included here)
+        # leak — see
+        # a related internal incident analysis (not included here)
         # for the production failure and the regression tests in
         # ``tests/test_traceback_no_retention.py`` that guard this
         # invariant. If you find yourself reaching for
@@ -637,7 +637,7 @@ class Connection(object):
         The Connection is NOT closed. We keep the channel open and
         drain inbound bytes from the kernel buffer to /dev/null so
         the peer doesn't get TCP-level backpressure that might
-        make its bug even louder (the broken client
+        make its bug even louder (the misbehaving client
         would just log harder if we closed). open-and-ignore is
         the cheapest stable state.
 
@@ -948,8 +948,8 @@ class Connection(object):
         We swallow EVERY exception from ``remove_reader``, in particular
         uvloop's ``RuntimeError('File descriptor N is used by transport ...')``
         which is raised when the fd was already recycled by another transport.
-        Letting it escape would re-introduce the spin. See a related
-        internal incident analysis (not included here).
+        Letting it escape would re-introduce the spin. See
+        a related internal incident analysis (not included here).
         """
         loop = self._asyncio_loop
         fd = self._registered_fd
@@ -976,7 +976,7 @@ class Connection(object):
         ``self._closed`` — because a half-closed fd's reader must come off the
         loop even when a prior ``close()`` already ran and is now a no-op. A
         reader that outlives a no-op ``close()`` is exactly the live spin we
-        saw (observed in a downstream application). See
+        saw in production. See
         docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
         ═══════════════════════════════════════════════════════════════════
         """
@@ -1098,8 +1098,8 @@ class Connection(object):
             Any of those re-introduce the 99.9%-CPU busy-loop: a half-closed
             socket (CLOSE-WAIT, pending EOF) is *permanently* readable to
             epoll, so re-asking the OS "is there more?" spins the core forever
-            (observed in a downstream application: 34k epoll wakeups/sec,
-            ZERO recv syscalls). The whole point of this rewrite is to NEVER ask.
+            (in production: 34k epoll wakeups/sec, ZERO recv syscalls).
+            The whole point of this rewrite is to NEVER ask.
             See docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
 
             On EOF / hard error the reader removes ITSELF from the loop
@@ -1112,8 +1112,8 @@ class Connection(object):
             # means our reader leaked. Disarm by saved fd and return — do NOT
             # call recv on the foreign fd. The close hook should already have
             # unregistered us; this is the belt-and-braces guard so we can
-            # never spin even if the hook was bypassed. See a related
-            # internal incident analysis (not included here).
+            # never spin even if the hook was bypassed. See
+            # a related internal incident analysis (not included here).
             if self._closed or self._channel.closed:
                 self._unregister_reader()
                 return
@@ -1182,7 +1182,8 @@ class Connection(object):
         # The hook fires from INSIDE SocketStream.close(), BEFORE the fd is
         # released, so we always unregister while the fd is still ours. This
         # makes "socket closed" => "reader removed" an invariant, no matter how
-        # the socket is closed. See a related internal incident analysis.
+        # the socket is closed. See a related internal incident analysis
+        # (not included here).
         try:
             self._channel.stream.set_close_callback(self._unregister_reader)
         except AttributeError:
@@ -1210,7 +1211,8 @@ class Connection(object):
 
         # Single source of truth for taking the reader off the loop (idempotent,
         # swallows uvloop's 'fd used by transport' RuntimeError). See
-        # _unregister_reader / a related internal incident analysis.
+        # _unregister_reader / a related internal incident analysis (not
+        # included here).
         self._unregister_reader()
 
         # Clear the socket close hook so a later stream.close() does not call
@@ -1528,8 +1530,8 @@ class Connection(object):
         """
         # ═══════════════════════════════════════════════════════════════
         # Closed-connection fast-path — see
-        # docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md and a related
-        # internal incident analysis (not included here).
+        # docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md and
+        # a related internal incident analysis (not included here).
         #
         # If the peer is gone, HANDLE_DEL cannot succeed: every send
         # times out and the cleanup loop, called on every netref __del__
@@ -2470,7 +2472,7 @@ class Connection(object):
             # (peer disconnected), there is nothing to reply to — swallow
             # the I/O error and mark the connection closed. Letting it
             # escape here turns every subsequent dispatch into an
-            # unawaited-coroutine log storm (observed in a downstream application).
+            # unawaited-coroutine log storm (see a related internal incident).
             self._send_async_result_safe(
                 consts.MSG_ASYNC_EXCEPTION, seq, lambda boxed=boxed: boxed
             )
@@ -2506,8 +2508,8 @@ class Connection(object):
             # connection means every AsyncResult the handler was
             # awaiting on. The production incident
             # accumulated 4 M leaked AsyncResult chains and
-            # 17.8 GB RSS through this exact pattern; see a related
-            # internal incident analysis (not included here).
+            # 17.8 GB RSS through this exact pattern; see
+            # a related internal incident analysis (not included here).
             t, v, tb = sys.exc_info()
             logger = self._config["logger"]
             if logger and t is not StopIteration:
@@ -2522,6 +2524,142 @@ class Connection(object):
             self._send(consts.MSG_EXCEPTION, seq, boxed)
             del t, v, tb, boxed
         else:
+            # ═════════════════════════════════════════════════════════════
+            # Late coroutine detection
+            # ═════════════════════════════════════════════════════════════
+            # Some user-level exposed methods are ``async def``. When their
+            # owning request comes in through a sync built-in handler —
+            # ``HANDLE_CALL`` / ``HANDLE_CALLATTR`` whose ``_HANDLERS`` entry
+            # is a plain ``def`` — ``_needs_async_dispatch`` cannot tell
+            # that the *user* method beneath is async, so the request lands
+            # here in the sync ``_dispatch_request`` path instead of in
+            # ``_dispatch_request_async``. Without this branch we would
+            # ``_box`` the bare coroutine as the reply payload; it would
+            # never be awaited, the user body never runs, and the peer
+            # receives garbage (in practice an "Unknown service" or a
+            # silent drop) accompanied by the noisy
+            # ``RuntimeWarning: Boxing coroutine object … Did you forget
+            # to await?`` from this very line. This was the root cause of
+            # the WebSocket ``status_change`` events never firing in
+            # a downstream application (statuses froze for the operator).
+            #
+            # Production trigger: a downstream application's service layer
+            # notifies subscribers via
+            # ``asyncreq(subscriber, HANDLE_CALLATTR, "on_message", ...)``.
+            # ``HANDLE_CALLATTR``'s ``_HANDLERS`` entry is ``def``, so
+            # ``_is_async_handler`` returns False and dispatch arrives
+            # here. The subscriber's ``exposed_on_message`` is
+            # ``async def`` → returns a coroutine → boxed.
+            #
+            # Fix shape: if the peer connection is running with asyncio
+            # serving (``_asyncio_enabled`` + ``_asyncio_loop``), hand the
+            # coroutine to the existing async-dispatch pinning machinery
+            # (``_DISPATCH_INFLIGHT`` strong-ref pin, identical to the
+            # routing at the top of ``_dispatch``). The coroutine is
+            # awaited on the connection's loop and the reply / exception
+            # is sent through ``_send_async_result_safe`` mirrors used by
+            # ``_dispatch_request_async``. Non-coroutine results — the vast
+            # majority — go through the original ``_send`` exactly as
+            # before; only coroutine results are diverted. No polling, no
+            # threads, fully event-driven.
+            #
+            # If the connection is NOT running asyncio serving we have no
+            # loop to drive the coroutine on. Rather than silently dropping
+            # the request (the pre-fix behaviour), we explicitly close the
+            # coroutine and reply with an exception that names the cause —
+            # the misconfiguration is loud and recoverable. See the
+            # equivalent guard in ``_dispatch`` (line ~2660) which raises
+            # ``RuntimeError`` for the same reason on MSG_ASYNC_REQUEST.
+            import inspect  # local — matches the convention elsewhere in this file
+            if inspect.iscoroutine(res):
+                if self._asyncio_enabled and self._asyncio_loop:
+                    # ── Backpressure: same gate as MSG_ASYNC_REQUEST. ──
+                    # Without this a runaway peer could flood the loop
+                    # with coroutine-returning sync calls and bypass the
+                    # ``max_inbound_inflight`` quarantine.
+                    if self._inbound_quarantined:
+                        res.close()
+                        return
+                    _max_inflight = self._config.get(
+                        "max_inbound_inflight", 0
+                    )
+                    if (
+                        _max_inflight
+                        and self._inbound_inflight >= _max_inflight
+                    ):
+                        self._enter_inbound_quarantine()
+                        res.close()
+                        return
+
+                    async def _await_and_reply(_coro=res, _seq=seq, _self=self):
+                        try:
+                            result = await _coro
+                        except BaseException:
+                            t, v, tb = sys.exc_info()
+                            logger = _self._config["logger"]
+                            if logger and t is not StopIteration:
+                                logger.debug(
+                                    "Exception caught (late-coroutine path)",
+                                    exc_info=True,
+                                )
+                            if (
+                                t is SystemExit
+                                and _self._config[
+                                    "propagate_SystemExit_locally"
+                                ]
+                            ):
+                                raise
+                            if (
+                                t is KeyboardInterrupt
+                                and _self._config[
+                                    "propagate_KeyboardInterrupt_locally"
+                                ]
+                            ):
+                                raise
+                            boxed = _self._box_exc(t, v, tb)
+                            _self._send_async_result_safe(
+                                consts.MSG_EXCEPTION, _seq, lambda b=boxed: b,
+                            )
+                            del t, v, tb, boxed
+                        else:
+                            _self._send_async_result_safe(
+                                consts.MSG_REPLY, _seq,
+                                lambda r=result: _self._box(r),
+                            )
+
+                    _coro_task = _await_and_reply()
+
+                    def _schedule(_coro_task=_coro_task, _self=self):
+                        task = asyncio.get_event_loop().create_task(_coro_task)
+                        _DISPATCH_INFLIGHT.add(task)
+                        _self._inbound_inflight += 1
+
+                        def _on_done(_t, _self=_self):
+                            _DISPATCH_INFLIGHT.discard(_t)
+                            _self._inbound_inflight -= 1
+
+                        task.add_done_callback(_on_done)
+
+                    self._asyncio_loop.call_soon_threadsafe(_schedule)
+                    return
+                # No asyncio loop — cannot drive the coroutine. Close it
+                # to suppress the "never awaited" warning and reply with
+                # a clear exception so the peer sees the real cause.
+                res.close()
+                exc = RuntimeError(
+                    "Async user handler returned a coroutine but this "
+                    "connection has no asyncio serving enabled "
+                    "(enable_asyncio_serving / AsyncioServer required to "
+                    "await coroutines from async exposed methods)."
+                )
+                try:
+                    raise exc
+                except RuntimeError:
+                    t, v, tb = sys.exc_info()
+                    boxed = self._box_exc(t, v, tb)
+                    self._send(consts.MSG_EXCEPTION, seq, boxed)
+                    del t, v, tb, boxed
+                return
             self._send(consts.MSG_REPLY, seq, self._box(res))
 
     def _box_exc(self, typ, val, tb):  # dispatch?
@@ -2632,9 +2770,8 @@ class Connection(object):
                 # quarantine and we silently drop every further
                 # MSG_REQUEST on this channel. This protects an
                 # agent from a malformed client that keeps pumping
-                # requests while ignoring our callbacks (observed in
-                # a downstream application, 12.88 GB
-                # RSS in 73 min before manual kill).
+                # requests while ignoring our callbacks (a production
+                # incident, 12.88 GB RSS in 73 min before manual kill).
                 if self._inbound_quarantined:
                     return
                 _max_inflight = self._config.get("max_inbound_inflight", 0)
@@ -3192,7 +3329,7 @@ class Connection(object):
         # ═══════════════════════════════════════════════════════════════════════════
         # When obj is a netref, hasattr(obj, attr) triggers __getattribute__() which
         # makes a remote call back to the server. If the server's _check_attr() also
-        # uses hasattr(), this creates infinite recursion (observed in a downstream application).
+        # uses hasattr(), this creates infinite recursion (see related issue in a downstream application).
         #
         # Solution: For netref objects, only use hasattr_static() which doesn't trigger
         # __getattribute__(). This breaks the recursion cycle.
