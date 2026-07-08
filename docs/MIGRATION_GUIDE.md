@@ -603,7 +603,7 @@ else:
 
 - [API Reference](API_REFERENCE.md)
 - [Examples](EXAMPLES.md)
-- [Implementation Design](../IMPLEMENTATION_DESIGN.md)
+- [Implementation Design](./IMPLEMENTATION_DESIGN.md)
 
 ---
 

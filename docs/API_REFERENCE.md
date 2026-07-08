@@ -433,4 +433,4 @@ Both methods work transparently from client perspective.
 
 - [Usage Examples](EXAMPLES.md)
 - [Migration Guide](MIGRATION_GUIDE.md)
-- [Implementation Design](../IMPLEMENTATION_DESIGN.md)
+- [Implementation Design](./IMPLEMENTATION_DESIGN.md)

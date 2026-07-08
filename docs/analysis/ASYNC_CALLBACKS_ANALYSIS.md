@@ -1,4 +1,4 @@
-# Analysis: Async Callback Support in RPyC
+# Analysis: Async Callbacks Support in RPyC
 
 ## ✅ What Is Already Covered in the Proposal
 
@@ -12,11 +12,11 @@ def _box(self, obj):
 
     # ✅ NEW: Check for an async function
     if inspect.iscoroutinefunction(obj):
-        # This is an async function - pack it as REMOTE_REF
-        # but mark with metadata that it is async
+        # This is an async function - box it as a REMOTE_REF
+        # but mark it with metadata indicating it is async
         id_pack = get_id_pack(obj)
         self._local_objects.add(id_pack, obj)
-        # Add an "is_async" flag to id_pack
+        # Add an "is_async" flag to the id_pack
         return consts.LABEL_REMOTE_REF, (*id_pack, {'async': True})
 ```
 
@@ -39,7 +39,7 @@ def _unbox(self, package):
     label, value = package
 
     if label == consts.LABEL_REMOTE_REF:
-        # Check metadata: async function?
+        # Check the metadata: async function?
         if isinstance(value, tuple) and len(value) == 4:
             id_pack, metadata = value[:3], value[3]
             if metadata.get('async'):
@@ -66,13 +66,13 @@ class MyService(rpyc.Service):
 
 - If `callback` is a netref (proxy) to a client-side function
 - We need to call `HANDLE_ASYNC_CALL` instead of `HANDLE_CALL`
-- But how do we determine this?
+- But how do we determine that?
 
 ---
 
 ## ❌ What Is Missing: The Detailed Mechanism
 
-### Scenario: The Client Passes an Async Callback
+### Scenario: Client Passes an Async Callback
 
 ```python
 # Client
@@ -96,10 +96,10 @@ def _box(self, obj):
         id_pack = get_id_pack(obj)
         self._local_objects.add(id_pack, obj)
 
-        # ⚠️ PROBLEM: How do we pass the is_async flag through Brine?
+        # ⚠️ PROBLEM: How to pass the is_async flag through Brine?
         # Brine supports only: int, bool, str, float, bytes, tuple, frozenset
 
-        # SOLUTION 1: Extend id_pack
+        # SOLUTION 1: Extend the id_pack
         return consts.LABEL_REMOTE_REF, (id_pack[0], id_pack[1], id_pack[2], True)
         #                                 ↑ class   ↑ id      ↑ version  ↑ is_async
 ```
@@ -143,10 +143,10 @@ def _unbox(self, package):
 ```python
 # Server
 async def exposed_process_with_callback(self, callback):
-    # callback = netref proxy to the client-side async function
+    # callback = netref proxy to the client's async function
     # callback.____is_async__ = True
 
-    # How do we call it?
+    # How to call it?
     result = await callback(42)  # ← Should work!
 ```
 
@@ -175,7 +175,7 @@ def __call__(self, *args, **kwargs):
         )
 ```
 
-**Problem #4:** `await callback(42)` will invoke `BaseNetref.__call__()`, which returns an `AsyncResult`.
+**Problem #4:** `await callback(42)` invokes `BaseNetref.__call__()`, which returns an `AsyncResult`.
 
 But `AsyncResult.__await__()` requires an event loop and `enable_asyncio_serving()`.
 
@@ -194,7 +194,7 @@ def _handle_async_call(self, obj, args, kwargs):
         # Option 1: Return the coroutine (who will await it?)
         # Option 2: Await immediately (but in what context?)
 
-        # SOLUTION: Schedule it on the client's event loop
+        # SOLUTION: Schedule it in the client's event loop
         loop = asyncio.get_running_loop()
         future = asyncio.ensure_future(coro)
 
@@ -227,7 +227,7 @@ def _dispatch_request(self, seq, raw_args):
         self._send(consts.MSG_REPLY, seq, self._box(res))
 ```
 
-**How do we execute `await obj(*args)` in a sync context?**
+**How can we run `await obj(*args)` in a sync context?**
 
 ### Solution 1: Asyncio.run() in the Handler (Bad!)
 
@@ -240,7 +240,7 @@ def _handle_async_call(self, obj, args, kwargs):
         return asyncio.run(coro)  # RuntimeError!
 ```
 
-### Solution 2: Schedule and Wait (Complicated!)
+### Solution 2: Schedule and Wait (Complex!)
 
 ```python
 def _handle_async_call(self, obj, args, kwargs):
@@ -254,12 +254,12 @@ def _handle_async_call(self, obj, args, kwargs):
             # No event loop - create a temporary one
             return asyncio.run(coro)
 
-        # There is an event loop - schedule the task
+        # There is an event loop - schedule a task
         future = asyncio.ensure_future(coro)
 
-        # ⚠️ PROBLEM: How do we wait for the future in a sync function?
-        # WE CAN'T: await future (sync function)
-        # WE CAN'T: loop.run_until_complete(future) (loop is already running)
+        # ⚠️ PROBLEM: How to wait for the future in a sync function?
+        # We CANNOT: await future (sync function)
+        # We CANNOT: loop.run_until_complete(future) (loop already running)
 
         # SOLUTION: Block and wait via threading.Event
         import threading
@@ -288,7 +288,7 @@ def _handle_async_call(self, obj, args, kwargs):
 
 ### Solution 3: Async Dispatch (Correct!)
 
-**Key idea:** `_dispatch_request()` should be async when the handler is async!
+**Key idea:** `_dispatch_request()` must be async when the handler is async!
 
 ```python
 async def _dispatch_request_async(self, seq, raw_args):
@@ -304,7 +304,7 @@ async def _dispatch_request_async(self, seq, raw_args):
             # Async handler - await
             res = await handler_func(self, *args)
         else:
-            # Sync handler - a regular call
+            # Sync handler - ordinary call
             res = handler_func(self, *args)
     except:
         t, v, tb = sys.exc_info()
@@ -315,7 +315,7 @@ async def _dispatch_request_async(self, seq, raw_args):
         self._send(consts.MSG_REPLY, seq, self._box(res))
 ```
 
-**But how do we call `_dispatch_request_async()` from the sync `_dispatch()`?**
+**But how to call `_dispatch_request_async()` from the sync `_dispatch()`?**
 
 ```python
 def _dispatch(self, data):
@@ -325,15 +325,15 @@ def _dispatch(self, data):
         # ... release locks ...
         seq, args = brine.load(data[1:])
 
-        # ✅ SOLUTION: Schedule the async dispatch on the event loop
+        # ✅ SOLUTION: Schedule the async dispatch in the event loop
         if self._asyncio_loop:
-            # Asyncio serving is enabled - schedule it
+            # Asyncio serving enabled - schedule
             asyncio.run_coroutine_threadsafe(
                 self._dispatch_request_async(seq, args),
                 self._asyncio_loop
             )
         else:
-            # Sync serving - regular sync dispatch
+            # Sync serving - ordinary sync dispatch
             self._dispatch_request(seq, args)
 ```
 
@@ -350,18 +350,18 @@ When `enable_asyncio_serving()` is enabled:
 1. **Server with an async callback:**
    ```python
    async def exposed_method(self, callback):
-       result = await callback(42)  # ← Calling an async callback
+       result = await callback(42)  # ← Call the async callback
    ```
 
 2. **The client handles the request:**
    - `_dispatch()` sees `MSG_REQUEST` with `HANDLE_ASYNC_CALL`
-   - Schedule `_dispatch_request_async()` on the event loop
-   - The handler executes `await obj(*args)`
+   - Schedule `_dispatch_request_async()` in the event loop
+   - The handler runs `await obj(*args)`
    - The result is sent back via `MSG_ASYNC_REPLY`
 
 3. **The server receives the result:**
    - `_dispatch()` receives `MSG_ASYNC_REPLY`
-   - `AsyncResult` gets the result
+   - The `AsyncResult` receives the result
    - `future.set_result()` unblocks `await callback(42)`
 
 ### Detailed Implementation
@@ -374,7 +374,7 @@ class Connection:
         if msg == consts.MSG_REQUEST or msg == consts.MSG_ASYNC_REQUEST:
             seq, args = brine.load(data[1:])
 
-            # Determine: is async dispatch needed?
+            # Determine: is an async dispatch needed?
             handler, _ = args
             handler_func = self._HANDLERS.get(handler)
 
@@ -394,7 +394,7 @@ class Connection:
                 # Sync dispatch
                 self._dispatch_request(seq, args)
 
-        # ... handling REPLY/EXCEPTION
+        # ... handling of REPLY/EXCEPTION
 ```
 
 ### Async Handler
@@ -407,7 +407,7 @@ async def _handle_async_call(self, obj, args, kwargs=()):
         # Already a coroutine
         result = await obj
     elif inspect.iscoroutinefunction(obj):
-        # Async function - call it and await
+        # Async function - call and await
         result = await obj(*args, **dict(kwargs))
     else:
         # Fallback to sync
@@ -416,7 +416,7 @@ async def _handle_async_call(self, obj, args, kwargs=()):
     return result
 ```
 
-**Key point:** The handler itself is `async def`, so it can use `await`!
+**Key point:** The handler itself is an `async def`, so it can use `await`!
 
 ---
 
@@ -469,7 +469,7 @@ async def _dispatch_request_async(self, seq, raw_args):
 ```python
 class BaseNetref:
     def __call__(self, *args, **kwargs):
-        """Call the proxy object."""
+        """Call a proxy object."""
 
         # Check: is this an async function?
         is_async = getattr(self, '____is_async__', False)
@@ -494,7 +494,7 @@ class BaseNetref:
 
 ### 4. Schedule Async Dispatch
 
-**Modify `_dispatch()`:**
+**Change `_dispatch()`:**
 
 ```python
 def _dispatch(self, data):
@@ -503,7 +503,7 @@ def _dispatch(self, data):
     if msg == consts.MSG_REQUEST:
         seq, args = brine.load(data[1:])
 
-        # Determine whether async dispatch is needed
+        # Determine whether an async dispatch is needed
         handler, _ = args
         needs_async = handler in [
             consts.HANDLE_ASYNC_CALL,
@@ -564,7 +564,7 @@ CLIENT                                    SERVER
   |                                         | 7. Receive the result
   |                                         |    AsyncResult.set_result(84)
   |                                         |    future.set_result(84)
-  |                                         |    await is unblocked
+  |                                         |    await unblocks
   |                                         |    result = 84
   |                                         |
 ```
@@ -574,9 +574,9 @@ CLIENT                                    SERVER
 ## ✅ Conclusion
 
 ### What is already in the Proposal:
-1. ✅ Boxing async functions with the is_async flag
-2. ✅ Unboxing async functions as netrefs
-3. ✅ Examples of using async callbacks
+1. ✅ Boxing of async functions with the is_async flag
+2. ✅ Unboxing of async functions as netrefs
+3. ✅ Usage examples for async callbacks
 
 ### What needs to be added/clarified:
 1. ⚠️ **Extending the id_pack** format: `(class, id, ver, is_async)`
@@ -586,11 +586,11 @@ CLIENT                                    SERVER
 5. ⚠️ **Handler async support**: all handlers must support async/await
 
 ### The main difficulty:
-**Async handlers must run in the event loop**, whereas `_dispatch()` is called from `serve()`, which may run in any thread.
+**Async handlers must run in the event loop**, but `_dispatch()` is called from `serve()`, which may be on any thread.
 
 **Solution:**
 - If `enable_asyncio_serving()` is enabled → handlers run via `run_coroutine_threadsafe()`
-- If disabled → async handlers use `asyncio.run()` (as currently done in tests)
+- If disabled → async handlers use `asyncio.run()` (as currently in the tests)
 
 ---
 
@@ -599,4 +599,4 @@ CLIENT                                    SERVER
 1. **Add details to the Proposal** about the async dispatch pipeline
 2. **Define a strategy** for handlers: always async or detect?
 3. **Test** nested callbacks (A→B→A→B...)
-4. **Document** the limitations (requires `enable_asyncio_serving()` for nested async)
+4. **Document** the limitations (`enable_asyncio_serving()` is required for nested async)

@@ -1,17 +1,17 @@
 # RPyC Refcount Error Monitoring
 
-## What changed
+## What Changed
 
 Now **all critical refcount errors are ALWAYS logged to stderr**, regardless of the configuration.
 
-### Which messages are logged
+### Which Messages Are Logged
 
 1. **On connection initialization:**
    ```
    INFO: RPyC Connection <conn_id> initialized. Refcount error monitoring: ENABLED (errors always logged to stderr)
    ```
 
-2. **On a DECREF for a missing key:**
+2. **On a DECREF error for a missing key:**
    ```
    WARNING: [REFCOUNT] DECREF on missing key <id_pack>
    ```
@@ -27,18 +27,17 @@ Now **all critical refcount errors are ALWAYS logged to stderr**, regardless of 
    <traceback>
    ```
 
-## Where to look for these messages
+## Where to Find These Messages
 
-### Application logs
+### Application stderr logs
 
-These messages are written to the process's stderr. If your application redirects
-stderr to a file, look in that log file (referred to below as `<stderr-log>`).
+These messages are written to the stderr stream of whichever process hosts the RPyC connection. If your host process redirects stderr to a file, look for them there (referred to below as the stderr log file).
 
-### What to check
+### What to Check
 
-#### 1. Verify that monitoring is active
+#### 1. Verify That Monitoring Is Active
 
-After **starting the server** or **a client connecting**, the following should appear:
+After **starting the process** or **a client connecting**, the following should appear:
 ```bash
 grep "INFO:.*Refcount error monitoring: ENABLED" <stderr-log>
 ```
@@ -50,13 +49,13 @@ INFO: RPyC Connection conn2 initialized. Refcount error monitoring: ENABLED (err
 ```
 
 If there are **NO** such messages, it means:
-- The server has not been started yet
-- There have been no new connections since updating rpyc_async
-- Stderr is not redirected to a file
+- The process is not started yet
+- There have been no new connections since the update
+- stderr is not redirected to a file
 
-#### 2. Check for refcount errors
+#### 2. Check for Refcount Errors
 
-**Search for all WARNING and ERROR messages:**
+**Search for all WARNING and ERROR entries:**
 ```bash
 grep -E "WARNING:|ERROR:" <stderr-log>
 ```
@@ -72,9 +71,9 @@ WARNING: [REFCOUNT] DECREF on missing key ('builtins.method', 10665440, 12347412
 WARNING: Failed to delete remote object ('builtins.dict', 10733632, 139475418934272). Possible memory leak on remote side.
 ```
 
-**If there are NO errors** - that's good! It means refcount is working correctly.
+**If there are NO errors** - that is good! It means refcount works correctly.
 
-#### 3. Count the number of errors
+#### 3. Count the Number of Errors
 
 **Count DECREF errors:**
 ```bash
@@ -86,32 +85,32 @@ grep -c "DECREF on missing key" <stderr-log>
 grep -c "Failed to delete remote object" <stderr-log>
 ```
 
-**If the counter is > 0**, there are refcount problems.
+**If the count is > 0**, there are refcount problems.
 
-### Example of a full check
+### Full Check Example
 
 ```bash
 #!/bin/bash
 
 LOG_FILE=<stderr-log>
 
-echo "=== Checking refcount monitoring ==="
+echo "=== Refcount monitoring check ==="
 echo
 
 # 1. Verify that monitoring is active
-echo "1. Checking monitoring activation:"
+echo "1. Monitoring activation check:"
 if grep -q "Refcount error monitoring: ENABLED" "$LOG_FILE" 2>/dev/null; then
     echo "   ✅ Monitoring is ACTIVE"
     count=$(grep -c "Refcount error monitoring: ENABLED" "$LOG_FILE")
     echo "   📊 Connections initialized: $count"
 else
     echo "   ⚠️  No activation messages found"
-    echo "   (the server may not have been restarted after the update)"
+    echo "   (the process may not have been restarted after the update)"
 fi
 
 echo
 
-# 2. Count the errors
+# 2. Count errors
 echo "2. Error statistics:"
 decref_count=$(grep -c "DECREF on missing key" "$LOG_FILE" 2>/dev/null || echo "0")
 failed_count=$(grep -c "Failed to delete remote object" "$LOG_FILE" 2>/dev/null || echo "0")
@@ -120,7 +119,7 @@ echo "   [REFCOUNT] DECREF on missing key: $decref_count"
 echo "   Failed to delete remote object: $failed_count"
 
 if [ "$decref_count" -gt 0 ] || [ "$failed_count" -gt 0 ]; then
-    echo "   ❌ THERE ARE ERRORS! Investigation required."
+    echo "   ❌ ERRORS PRESENT! Investigation required."
 else
     echo "   ✅ No errors"
 fi
@@ -138,20 +137,20 @@ echo
 echo "=== Check complete ==="
 ```
 
-**Save it to a file** `check_refcount.sh` and run it:
+**Save it to a file** `check_refcount.sh` and run:
 ```bash
 chmod +x check_refcount.sh
 ./check_refcount.sh
 ```
 
-## Interpreting the results
+## Interpreting the Results
 
-### Normal operation
+### Normal Operation
 
 ```
-=== Checking refcount monitoring ===
+=== Refcount monitoring check ===
 
-1. Checking monitoring activation:
+1. Monitoring activation check:
    ✅ Monitoring is ACTIVE
    📊 Connections initialized: 15
 
@@ -163,21 +162,21 @@ chmod +x check_refcount.sh
 === Check complete ===
 ```
 
-**This is good!** The system is working correctly.
+**This is good!** The system works correctly.
 
-### Errors detected
+### Errors Detected
 
 ```
-=== Checking refcount monitoring ===
+=== Refcount monitoring check ===
 
-1. Checking monitoring activation:
+1. Monitoring activation check:
    ✅ Monitoring is ACTIVE
    📊 Connections initialized: 8
 
 2. Error statistics:
    [REFCOUNT] DECREF on missing key: 234
    Failed to delete remote object: 12
-   ❌ THERE ARE ERRORS! Investigation required.
+   ❌ ERRORS PRESENT! Investigation required.
 
 3. Last 5 errors:
    WARNING: [REFCOUNT] DECREF on missing key ('builtins.method', 10665440, 123474125771264)
@@ -190,30 +189,30 @@ chmod +x check_refcount.sh
 **This is a problem!** You need to:
 1. Save the full log for analysis
 2. Check when the errors started
-3. Correlate with events (large requests, long-running operation, etc.)
+3. Correlate them with events (large requests, long-running work, etc.)
 
-## What to do when errors are detected
+## What to Do When Errors Are Detected
 
-### 1. Save the logs
+### 1. Save the Logs
 
 ```bash
 cp <stderr-log> ~/refcount_errors_$(date +%Y%m%d_%H%M%S).log
 ```
 
-### 2. Analyze the patterns
+### 2. Analyze the Patterns
 
-**Which objects appear most often?**
+**Which objects are most common?**
 ```bash
 grep "DECREF on missing key" ~/refcount_errors_*.log | \
   sed "s/.*('\([^']*\)'.*/\1/" | sort | uniq -c | sort -rn
 ```
 
-**At what time do they occur?**
+**When do they occur?**
 ```bash
 grep -E "REFCOUNT|Failed to delete" ~/refcount_errors_*.log | head -20
 ```
 
-### 3. Correlate with load
+### 3. Correlate with Load
 
 - Check the log file size: `ls -lh <stderr-log>`
 - If the log is huge → many errors → high load
@@ -222,31 +221,31 @@ grep -E "REFCOUNT|Failed to delete" ~/refcount_errors_*.log | head -20
 ### 4. Reporting
 
 Create an issue with the following information:
-- The number of errors
-- The object types (bound method, dict, list, etc.)
-- The time period
-- The conditions under which they occur (if known)
-- Attach log excerpts
+- Number of errors
+- Object types (bound method, dict, list, etc.)
+- Time period
+- Conditions of occurrence (if known)
+- Attach log fragments
 
-## Disabling monitoring (NOT RECOMMENDED)
+## Disabling Monitoring (NOT RECOMMENDED)
 
-If for some reason you need to disable the error monitoring in stderr, you can redirect stderr to /dev/null when starting the application:
+If for some reason you need to disable error monitoring in stderr, you can redirect stderr to /dev/null when starting the process:
 
 ```bash
-your-application 2>/dev/null
+<start-command> 2>/dev/null
 ```
 
 **BUT THIS IS A BAD IDEA!** You will lose important diagnostic information.
 
-## Bottom line
+## Summary
 
-**Now you will ALWAYS see refcount errors** in your application's stderr log.
+**Now you will ALWAYS see refcount errors** in the host process's stderr log.
 
-**Check after the next server start:**
+**Check after the next start of the process:**
 ```bash
-# 1. Start/restart the server
+# 1. Start/restart the process
 
-# 2. Wait a bit for initialization
+# 2. Wait a little for initialization
 sleep 2
 
 # 3. Verify that monitoring is active
@@ -258,6 +257,6 @@ tail -20 <stderr-log> | grep "INFO:"
 
 **If you see this message** - everything works! 🎉
 
-**If there are no refcount errors** - great! The system is working correctly! ✅
+**If there are no refcount errors** - excellent! The system works correctly! ✅
 
 **If there are errors** - now you can see them and investigate! 🔍

@@ -8,21 +8,21 @@
 
 Imagine a restaurant:
 
-**Regular Sync Dispatch (current RPyC):**
+**Ordinary Sync Dispatch (current RPyC):**
 ```
-Customer ordered → Waiter wrote it down → Went to the kitchen → Waits until it's cooked → Came back
+Customer orders → Waiter writes it down → Goes to the kitchen → Waits until it's cooked → Comes back
                                                       ↑
-                                         Blocks serving
-                                         other tables!
+                                         Blocks service for
+                                         the other tables!
 ```
 
 **Async Dispatch Pipeline:**
 ```
-Customer ordered → Waiter wrote it down → Handed off to the kitchen → Serves others
+Customer orders → Waiter writes it down → Hands it to the kitchen → Serves others
                                                       ↓
-                                    The kitchen cooks asynchronously
+                                    Kitchen cooks asynchronously
                                                       ↓
-                                    Ready → Bell → Waiter picked it up
+                                    Ready → Bell → Waiter picks it up
 ```
 
 ---
@@ -47,13 +47,13 @@ def _dispatch_request(self, seq, raw_args):
         self._send(consts.MSG_REPLY, seq, self._box(res))
 ```
 
-**Problem:** If `handler` is an async function, we get a **coroutine** (not awaited):
+**The problem:** If `handler` is an async function, we get a **coroutine** (not awaited):
 
 ```python
 # Server
 class MyService(rpyc.Service):
     async def exposed_fetch_data(self, url):  # ← async def!
-        await asyncio.sleep(1)  # Simulating I/O
+        await asyncio.sleep(1)  # Simulated I/O
         return "data"
 
 # When the client calls:
@@ -64,13 +64,13 @@ handler = self._handle_call
 res = handler(self, exposed_fetch_data, args)
 # res = <coroutine object exposed_fetch_data>  ← NOT awaited!
 
-# We send the coroutine to the client (pointless!)
+# We send the coroutine to the client (meaningless!)
 self._send(consts.MSG_REPLY, seq, self._box(res))
 ```
 
 **Result:**
-- ❌ The async function did not execute
-- ❌ The client received a coroutine object instead of a result
+- ❌ The async function did not run
+- ❌ The client received a coroutine object, not the result
 - ❌ Warning: "coroutine was never awaited"
 
 ### Why Can't We Just `await`?
@@ -102,7 +102,7 @@ async def _dispatch_request(self, seq, raw_args):  # ← async def
     self._send(consts.MSG_REPLY, seq, self._box(res))
 ```
 
-**But a new problem:** Who will call `_dispatch_request()`? It is now a coroutine!
+**But a new problem:** Who will call `_dispatch_request()`? It's a coroutine now!
 
 ---
 
@@ -112,7 +112,7 @@ async def _dispatch_request(self, seq, raw_args):  # ← async def
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ 1. A message arrived (socket readable)                      │
+│ 1. Message arrived (socket readable)                        │
 └───────────────────────┬─────────────────────────────────────┘
                         │
                         ▼
@@ -129,7 +129,7 @@ async def _dispatch_request(self, seq, raw_args):  # ← async def
 │ SYNC Handler        │  │ ASYNC Handler                    │
 │                     │  │                                  │
 │ _dispatch_request() │  │ _dispatch_request_async()        │
-│ • Call directly     │  │ • Schedule on the event loop     │
+│ • Direct call       │  │ • Scheduled in the event loop    │
 │ • Blocks            │  │ • Does NOT block                 │
 └─────────────────────┘  └──────────────────────────────────┘
 ```
@@ -146,14 +146,14 @@ class Connection:
             seq, args = brine.load(data[1:])
             handler, _ = args
 
-            # ✅ KEY POINT: Determine whether async dispatch is needed
+            # ✅ KEY POINT: Determine whether an async dispatch is needed
             needs_async = self._is_async_handler(handler)
 
             if needs_async and self._asyncio_loop:
                 # ═══════════════════════════════════════════
                 # ASYNC DISPATCH PIPELINE
                 # ═══════════════════════════════════════════
-                # Schedule async handling on the event loop
+                # Schedule async handling in the event loop
                 asyncio.run_coroutine_threadsafe(
                     self._dispatch_request_async(seq, args),
                     self._asyncio_loop
@@ -176,7 +176,7 @@ class Connection:
                 # Async handler - await!
                 res = await handler_func(self, *args)  # ✅ Works!
             else:
-                # Sync handler - a regular call
+                # Sync handler - ordinary call
                 res = handler_func(self, *args)
         except:
             t, v, tb = sys.exc_info()
@@ -204,7 +204,7 @@ res = obj(*args)  # BLOCKS if long-running!
 _send(MSG_REPLY, res)
 ```
 
-**Execution time:** If `obj(*args)` takes 5 seconds → the whole dispatch is blocked for 5 seconds.
+**Execution time:** If `obj(*args)` takes 5 seconds → the entire dispatch is blocked for 5 seconds.
 
 ### After (Async Dispatch Pipeline)
 
@@ -218,9 +218,9 @@ run_coroutine_threadsafe(
     _dispatch_request_async(seq, args)
 )  # ← Returns IMMEDIATELY!
    ↓
-We keep handling other requests!
+Keep handling other requests!
 
-# In parallel on the event loop:
+# In parallel in the event loop:
 _dispatch_request_async():
    await handler()  # Does NOT block the event loop
    _send(MSG_REPLY, res)
@@ -230,7 +230,7 @@ _dispatch_request_async():
 
 ---
 
-## 🎯 Why It Is Needed: Practical Scenarios
+## 🎯 Why It's Needed: Practical Scenarios
 
 ### Scenario 1: Async Callbacks
 
@@ -248,16 +248,16 @@ conn.root.process(my_callback)  # Pass the callback
 class MyService(rpyc.Service):
     def exposed_process(self, callback):
         # Call the callback
-        result = callback(42)  # ← What comes back?
+        result = callback(42)  # ← What gets returned?
         # result = <coroutine> ← NOT awaited!
 ```
 
-**Problem:**
-- The server calls `callback(42)` → the client receives a request
+**The problem:**
+- The server calls `callback(42)` → the client receives the request
 - Client: `_dispatch_request()` → `_handle_call(my_callback, (42,))`
 - `_handle_call` calls `my_callback(42)` → returns a coroutine
 - The coroutine is NOT awaited → the result is not obtained
-- The client sends the coroutine back to the server (pointless!)
+- The client sends the coroutine back to the server (meaningless!)
 
 **With the Async Dispatch Pipeline:**
 
@@ -269,7 +269,7 @@ _dispatch(data):
         _dispatch_request_async(seq, args)
     )
 
-# On the event loop:
+# In the event loop:
 _dispatch_request_async():
     res = await _handle_async_call(my_callback, (42,))
     # _handle_async_call:
@@ -338,22 +338,22 @@ def _is_async_handler(self, handler_id):
     return inspect.iscoroutinefunction(handler_func)
 ```
 
-### 2. Scheduling: Scheduling on the Event Loop
+### 2. Scheduling: Scheduling in the Event Loop
 
 ```python
 # In _dispatch()
 if needs_async and self._asyncio_loop:
-    # Schedule on the event loop (a different thread is OK!)
+    # Schedule in the event loop (another thread is OK!)
     future = asyncio.run_coroutine_threadsafe(
         self._dispatch_request_async(seq, args),
         self._asyncio_loop
     )
-    # We do NOT wait for future.result() - we return immediately
+    # We do NOT wait for future.result() - return immediately
 ```
 
 **Key point:** `run_coroutine_threadsafe()` can be called from **any thread**, even if the event loop is in another one!
 
-### 3. Async Execution: Running with Await
+### 3. Async Execution: Executing With Await
 
 ```python
 async def _dispatch_request_async(self, seq, raw_args):
@@ -420,7 +420,7 @@ Total: 5 seconds for a single request, but THOUSANDS in parallel!
 
 ---
 
-## ✅ Overall Advantages
+## ✅ Summary of Benefits
 
 ### 1. Does Not Block the Event Loop
 ```python
@@ -471,7 +471,7 @@ result = await conn.root.recursive(5, callback)
 ### Sync code keeps working:
 
 ```python
-# Old sync code - WITHOUT changes!
+# Old sync code - NO changes!
 conn = rpyc.connect("localhost", 18861)
 result = conn.root.add(3, 4)  # Works as before
 
@@ -495,11 +495,11 @@ result = await conn.root.async_add(3, 4)  # Now it works
 **Async Dispatch Pipeline** is:
 
 1. **Detection** - determine async vs sync handler
-2. **Routing** - sync → regular dispatch, async → async pipeline
+2. **Routing** - sync → ordinary dispatch, async → async pipeline
 3. **Scheduling** - `run_coroutine_threadsafe()` for async handlers
 4. **Execution** - `await` in `_dispatch_request_async()`
 
-**Why it is needed:**
+**Why it's needed:**
 - ✅ Execute async handlers without blocking
 - ✅ Support async callbacks
 - ✅ Scale to thousands of concurrent requests

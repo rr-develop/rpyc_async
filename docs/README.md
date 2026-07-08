@@ -8,6 +8,19 @@
 - **[Examples](EXAMPLES.md)** - Practical code examples
 - **[Migration Guide](MIGRATION_GUIDE.md)** - Upgrade from v5.0 to v5.1
 
+### Design & Proposals
+
+- **[Implementation Design](IMPLEMENTATION_DESIGN.md)** - Detailed technical design
+- **[Implementation Summary](IMPLEMENTATION_SUMMARY.md)** - High-level summary
+- **[Async Support Proposal](ASYNC_SUPPORT_PROPOSAL.md)** / **[V2](ASYNC_SUPPORT_PROPOSAL_V2.md)** - Original proposals
+- **[Async Dispatch Pipeline Explained](ASYNC_DISPATCH_PIPELINE_EXPLAINED.md)** - Dispatch internals
+
+### Analysis Notes
+
+- **[Async Callbacks Analysis](analysis/ASYNC_CALLBACKS_ANALYSIS.md)**
+- **[Final Analysis](analysis/FINAL_ANALYSIS.md)**
+- **[Refcount Monitoring](analysis/REFCOUNT_MONITORING.md)**
+
 ---
 
 ## Quick Start
@@ -264,7 +277,7 @@ async def exposed_process_batch(self, items):
 
 ## Contributing
 
-See [Implementation Design](../IMPLEMENTATION_DESIGN.md) for technical details.
+See [Implementation Design](./IMPLEMENTATION_DESIGN.md) for technical details.
 
 ---
 

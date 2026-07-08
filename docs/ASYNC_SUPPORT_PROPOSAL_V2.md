@@ -39,7 +39,7 @@ We extend the protocol with **optional** components; old code ignores them.
 
 ### 3. Auto-Detection of Sync vs Async
 
-The protocol automatically selects the correct handler based on metadata.
+The protocol automatically picks the correct handler based on metadata.
 
 ---
 
@@ -74,7 +74,7 @@ HANDLE_ASYNC_INSPECT = 23      # Inspection with async metadata
 ```
 
 **Backward compatibility:**
-- Old clients/servers do not know about the new constants
+- Old clients/servers don't know about the new constants
 - They use only the old ones (`MSG_REQUEST`, `HANDLE_CALL`, etc.)
 - No errors
 
@@ -99,18 +99,18 @@ FLAGS_COROUTINE = 0x02 # The object is a coroutine
 
 # Examples:
 (MyClass, 12345, 0, 0x01)      # Async callable
-(MyClass, 12345, 0, 0x00)      # Sync callable (regular)
+(MyClass, 12345, 0, 0x00)      # Sync callable (ordinary)
 (MyClass, 12345, 0, 0x02)      # Coroutine object
 ```
 
 **Backward compatibility:**
 ```python
-# During unboxing:
+# When unboxing:
 if len(id_pack) == 3:
     # Old format - no flags
     flags = 0x00  # Sync by default
 elif len(id_pack) == 4:
-    # New format - flags are present
+    # New format - flags present
     flags = id_pack[3]
 ```
 
@@ -122,7 +122,7 @@ elif len(id_pack) == 4:
 
 ```python
 def _box(self, obj):
-    """Pack an object for transmission over the network."""
+    """Box an object for transmission over the network."""
 
     # ═════════════════════════════════════════════════════════
     # EXISTING LOGIC (unchanged)
@@ -142,7 +142,7 @@ def _box(self, obj):
     # ═════════════════════════════════════════════════════════
 
     if inspect.iscoroutine(obj):
-        # This is a coroutine - it CANNOT be transmitted over the network!
+        # This is a coroutine - we CANNOT send it over the network!
         # Instead: execute it and send the result
         # Or: wrap it in an AsyncResultProxy (see below)
         raise TypeError(
@@ -155,7 +155,7 @@ def _box(self, obj):
     # ═════════════════════════════════════════════════════════
 
     if inspect.iscoroutinefunction(obj):
-        # Async function - pack it with a flag
+        # Async function - box it with a flag
         id_pack = get_id_pack(obj)
         self._local_objects.add(id_pack, obj)
 
@@ -165,11 +165,11 @@ def _box(self, obj):
         return consts.LABEL_REMOTE_REF, id_pack_with_flags
 
     # ═════════════════════════════════════════════════════════
-    # EXISTING LOGIC: Regular objects
+    # EXISTING LOGIC: Ordinary objects
     # ═════════════════════════════════════════════════════════
 
     else:
-        # Sync object - pack it without flags (or with 0x00)
+        # Sync object - box without flags (or with 0x00)
         id_pack = get_id_pack(obj)
         self._local_objects.add(id_pack, obj)
 
@@ -187,7 +187,7 @@ def _box(self, obj):
 
 ```python
 def _unbox(self, package):
-    """Unpack an object received over the network."""
+    """Unbox an object received over the network."""
 
     label, value = package
 
@@ -205,7 +205,7 @@ def _unbox(self, package):
         return self._local_objects[value]
 
     # ═════════════════════════════════════════════════════════
-    # ✅ NEW: Unpacking Remote Ref with flags
+    # ✅ NEW: Unboxing a Remote Ref with flags
     # ═════════════════════════════════════════════════════════
 
     if label == consts.LABEL_REMOTE_REF:
@@ -229,7 +229,7 @@ def _unbox(self, package):
             proxy = self._netref_factory(id_pack)
             self._proxy_cache[id_pack] = proxy
 
-        # ✅ NEW: Set the flags on the proxy
+        # ✅ NEW: Set flags on the proxy
         if flags & consts.FLAGS_ASYNC:
             proxy.____is_async__ = True
         else:
@@ -273,7 +273,7 @@ def _dispatch(self, data):
             # ═══════════════════════════════════════════════════
             # ASYNC DISPATCH PIPELINE
             # ═══════════════════════════════════════════════════
-            # Schedule async handling on the event loop
+            # Schedule async handling in the event loop
             asyncio.run_coroutine_threadsafe(
                 self._dispatch_request_async(seq, args),
                 self._asyncio_loop
@@ -309,7 +309,7 @@ def _dispatch(self, data):
 
 ```python
 def _needs_async_dispatch(self, msg, args):
-    """Determines whether async dispatch is needed for a given request."""
+    """Determines whether an async dispatch is needed for this request."""
 
     # Explicit indication via MSG_ASYNC_REQUEST
     if msg == consts.MSG_ASYNC_REQUEST:
@@ -389,7 +389,7 @@ async def _handle_async_call(self, obj, args, kwargs=()):
         result = await obj
 
     elif inspect.iscoroutinefunction(obj):
-        # obj is an async function - call it and await
+        # obj is an async function - call and await
         coro = obj(*args, **dict(kwargs))
         result = await coro
 
@@ -409,11 +409,11 @@ async def _handle_async_callattr(self, obj, name, args, kwargs=()):
     # Get the attribute
     attr = self._handle_getattr(obj, name)
 
-    # Call via the async call handler
+    # Call it through the async call handler
     return await self._handle_async_call(attr, args, kwargs)
 ```
 
-#### Handler Registration
+#### Registering Handlers
 
 ```python
 @classmethod
@@ -450,7 +450,7 @@ def _request_handlers(cls):
 # In netref.py
 class BaseNetref:
     def __call__(self, *args, **kwargs):
-        """Call the proxy object - auto-detect sync vs async."""
+        """Call a proxy object - auto-detect sync vs async."""
 
         # ✅ NEW: Check the is_async flag
         is_async = getattr(self, '____is_async__', False)
@@ -466,7 +466,7 @@ class BaseNetref:
                 args,
                 kwargs
             )
-            # Return an AsyncResult (with __await__())
+            # Return the AsyncResult (with __await__())
             return async_result
 
         else:
@@ -495,7 +495,7 @@ class AsyncResult:
     # ... existing methods unchanged ...
 
     # ═════════════════════════════════════════════════════════
-    # ✅ NEW: Support for async/await
+    # ✅ NEW: async/await support
     # ═════════════════════════════════════════════════════════
 
     def __await__(self):
@@ -525,13 +525,13 @@ class AsyncResult:
             """Callback when the result arrives."""
             if not future.done():
                 if async_res._is_exc:
-                    # Exception - set it via call_soon_threadsafe
+                    # Exception - set via call_soon_threadsafe
                     loop.call_soon_threadsafe(
                         future.set_exception,
                         async_res._obj
                     )
                 else:
-                    # Result - set it via call_soon_threadsafe
+                    # Result - set via call_soon_threadsafe
                     loop.call_soon_threadsafe(
                         future.set_result,
                         async_res._obj
@@ -665,15 +665,15 @@ result = await conn.root.fetch_data("http://example.com")
    ↓
 2. Netref.__getattr__("fetch_data")
    → Creates a proxy for the method
-   → Does NOT yet know whether it's sync or async (a request to the server is needed)
+   → Does not yet know sync or async (needs a request to the server)
    ↓
 3. Client calls the proxy: proxy("http://...")
    ↓
 4. Netref.__call__():
    Checks ____is_async__
    → Unknown (first call)
-   → We use HANDLE_CALLATTR (sync fallback)
-   → We send MSG_REQUEST
+   → Use HANDLE_CALLATTR (sync fallback)
+   → Send MSG_REQUEST
    ↓
 5. Server: _dispatch(MSG_REQUEST)
    ↓
@@ -688,8 +688,8 @@ result = await conn.root.fetch_data("http://example.com")
    → result = method("http://...")
    → result = <coroutine object> ← PROBLEM!
    ↓
-10. The server sends a coroutine (NOT what we need!)
-    ❌ Error: a coroutine is not serializable
+10. Server sends the coroutine (NOT what we need!)
+    ❌ Error: coroutine cannot be serialized
 ```
 
 **SOLUTION: Use Inspect**
@@ -700,16 +700,16 @@ We need to modify `_handle_call()`:
 def _handle_call(self, obj, args, kwargs=()):
     """Handler for calling functions - with async detection!"""
 
-    # ✅ NEW: Check for async
+    # ✅ NEW: Check async
     if inspect.iscoroutinefunction(obj):
         # This is an async function!
-        # We CANNOT call it here - return an error with instructions
+        # We MUST NOT call it here - return an error with instructions
         raise TypeError(
             f"Cannot call async function {obj} from sync handler. "
             f"Use HANDLE_ASYNC_CALL instead."
         )
 
-    # Regular sync call
+    # Ordinary sync call
     return obj(*args, **dict(kwargs))
 ```
 
@@ -725,7 +725,7 @@ def _handle_call(self, obj, args, kwargs=()):
    ↓
 3. Now it is known that fetch_data is async
    → async_request(HANDLE_ASYNC_CALLATTR, ...)
-   → We send MSG_ASYNC_REQUEST
+   → Send MSG_ASYNC_REQUEST
    ↓
 4. Server: _dispatch(MSG_ASYNC_REQUEST)
    → needs_async = True
@@ -748,7 +748,7 @@ def _handle_call(self, obj, args, kwargs=()):
 9. Client: _dispatch(MSG_ASYNC_REPLY)
    → AsyncResult.set_result("Data from http://...")
    ↓
-10. Client: await is unblocked
+10. Client: await unblocks
     → result = "Data from http://..."
 ```
 
@@ -761,7 +761,7 @@ def _handle_call(self, obj, args, kwargs=()):
 # Server
 class MyService(rpyc.Service):
     async def exposed_process(self, callback):
-        result = await callback(42)  # ← Calling an async callback
+        result = await callback(42)  # ← Call the async callback
         return f"Got: {result}"
 
 # Client
@@ -796,13 +796,13 @@ result = await conn.root.process(my_callback)
    → await _handle_async_callattr(service, "process", (proxy,))
    ↓
 6. Server: await exposed_process(proxy)
-   → result = await callback(42)  ← Calling the proxy
+   → result = await callback(42)  ← Call the proxy
    ↓
 7. Server: proxy.__call__(42)
    → ____is_async__ = True
    → async_request(HANDLE_ASYNC_CALL, proxy, (42,))
-   → We send MSG_ASYNC_REQUEST to the client
-   → We return an AsyncResult
+   → Send MSG_ASYNC_REQUEST to the client
+   → Return an AsyncResult
    ↓
 8. Server: await AsyncResult  ← Wait for the result from the client
    ↓
@@ -822,7 +822,7 @@ result = await conn.root.process(my_callback)
     ↓
 13. Server: _dispatch(MSG_ASYNC_REPLY)
     → AsyncResult.set_result(84)
-    → await is unblocked
+    → await unblocks
     → result = 84
     ↓
 14. Server: exposed_process() continues
@@ -900,7 +900,7 @@ class MyService(rpyc.Service):
 
 **Result:**
 - ✅ Sync methods work
-- ✅ `await` works (simply waits like a regular AsyncResult)
+- ✅ `await` works (just waits like an ordinary AsyncResult)
 - ⚠️ Async exposed methods are unavailable (the server does not support them)
 
 ---
@@ -921,14 +921,14 @@ class MyService(rpyc.Service):
 
 **What happens:**
 
-1. The old client sends MSG_REQUEST (does not know about async)
+1. The old client sends MSG_REQUEST (it doesn't know about async)
 2. Server: `_dispatch(MSG_REQUEST)`
    - The old client did not enable asyncio serving
    - `self._asyncio_loop = None`
 3. Server: `_dispatch_request()` (SYNC!)
 4. Server: `_handle_call(exposed_async_add, (3, 4))`
 
-**Problem:** `exposed_async_add` is an async function; calling it will return a coroutine!
+**Problem:** `exposed_async_add` is an async function; calling it returns a coroutine!
 
 **SOLUTION in _handle_call():**
 
@@ -940,7 +940,7 @@ def _handle_call(self, obj, args, kwargs=()):
     if inspect.iscoroutinefunction(obj):
         # Async function, but the caller is sync (old client)
 
-        # Try to execute it via asyncio.run()
+        # Try to run it via asyncio.run()
         try:
             loop = asyncio.get_running_loop()
             # Already in an event loop - we CANNOT use asyncio.run()
@@ -968,7 +968,7 @@ def _handle_call(self, obj, args, kwargs=()):
             # No event loop - create a temporary one
             return asyncio.run(obj(*args, **dict(kwargs)))
 
-    # Regular sync call
+    # Ordinary sync call
     return obj(*args, **dict(kwargs))
 ```
 
@@ -1064,7 +1064,7 @@ class MyService(rpyc.Service):
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    CLIENT (Asyncio Mode)                        │
+│                    CLIENT (Asyncio Mode)                       │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  async def main():                                              │
@@ -1084,7 +1084,7 @@ class MyService(rpyc.Service):
                             │ id_pack + FLAGS_ASYNC
                             │
 ┌───────────────────────────▼─────────────────────────────────────┐
-│                    SERVER (Asyncio Mode)                        │
+│                    SERVER (Asyncio Mode)                       │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  loop.add_reader(fd, on_readable)  ← Event-driven receiving    │
@@ -1131,7 +1131,7 @@ This protocol proposal provides:
 4. ✅ **Performance**:
    - 100-150x faster than BgServingThread
    - Event-driven instead of polling
-   - Concurrent execution of async operations
+   - Parallel execution of async operations
 
 5. ✅ **Ease of use**:
    - Just `async def exposed_*`

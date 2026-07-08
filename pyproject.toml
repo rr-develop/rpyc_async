@@ -64,6 +64,9 @@ only-include = ["rpyc"]
 [tool.hatch.build.targets.wheel]
 only-include = ["rpyc"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.codespell]
 skip = '.git,*.pdf,*.svg'
 #
