@@ -82,9 +82,12 @@ finally:
 ```
 
 **Notes:**
-- **Use this, not `conn.close()`, in async code.** `close()` issues a blocking
-  `sync_request(HANDLE_CLOSE)`; on a connection that serves the running loop
-  that request is rejected by a guard and raises `RuntimeError`.
+- **Use this, not `conn.close()`, in async code.** `close()` issues a *blocking*
+  `sync_request(HANDLE_CLOSE)` and waits for a reply that usually never arrives
+  (the peer cleans up before emitting it). That wait runs to
+  `sync_request_timeout` — **30 seconds by default** — with the event loop
+  frozen for the whole time. Measured: `close()` 3.00 s at
+  `sync_request_timeout=3`, `aclose()` 0.00 s.
 - Drains pending netref deletions, sends `HANDLE_CLOSE` event-driven, then
   cleans up locally. Never blocks the loop. Safe to call more than once.
 

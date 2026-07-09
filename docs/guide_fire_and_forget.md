@@ -73,7 +73,7 @@ async def main():
     # Do other work...
     await asyncio.sleep(1)
 
-    conn.close()
+    await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -204,7 +204,7 @@ async def main():
     # Both tasks run concurrently
     await asyncio.gather(task1, task2)
 
-    conn.close()
+    await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -244,7 +244,7 @@ async def main():
     )
 
     await task
-    conn.close()
+    await conn.aclose()
 ```
 
 ---
@@ -334,7 +334,7 @@ async def main():
     # Wait for all
     await asyncio.gather(*tasks)
 
-    conn.close()
+    await conn.aclose()
 ```
 
 ### Pattern 2: Fire and Continue
@@ -446,14 +446,22 @@ server = AsyncioServer(...)  # Required for async
 **Solution:** Use `async_connect()` which automatically enables asyncio serving:
 
 ```python
-# Correct way
 from rpyc.core.async_connect import async_connect
-conn = await async_connect("localhost", 18861)  # Auto-enables asyncio serving
 
-# Manual way
-conn = rpyc.connect("localhost", 18861)
-conn.enable_asyncio_serving()  # Must call this!
+conn = await async_connect("localhost", 18861)  # auto-enables asyncio serving
 ```
+
+`rpyc.connect()` is **not** an alternative here: it is synchronous and raises
+`RuntimeError` when called from a running event loop. `enable_asyncio_serving()`
+is only for connections you built by hand from a channel/stream — `async_connect()`
+and `AsyncioServer` already call it for you.
+
+Close the connection with `await conn.aclose()`. The synchronous `conn.close()`
+issues a **blocking** `sync_request(HANDLE_CLOSE)` and waits for a reply that,
+as the implementation notes, usually never arrives — the peer tears the
+connection down before emitting it. The wait therefore runs to
+`sync_request_timeout` (30 s by default), **freezing the event loop** for that
+long. `aclose()` sends the same message event-driven and never blocks.
 
 ---
 
@@ -501,7 +509,7 @@ def fire_and_forget(
     success_callback: Callable[[T], None] | None = None,
     error_callback: Callable[[BaseException], None] | None = None,
     name: str | None = None,
-) -> asyncio.Task[None]
+) -> asyncio.Task[None]: ...
 ```
 
 Execute an awaitable in the background with sync callbacks.
@@ -529,7 +537,7 @@ def fire_and_forget_async(
     success_callback: Callable[[T], Awaitable[None]] | None = None,
     error_callback: Callable[[BaseException], Awaitable[None]] | None = None,
     name: str | None = None,
-) -> asyncio.Task[None]
+) -> asyncio.Task[None]: ...
 ```
 
 Execute an awaitable in the background with async callbacks.

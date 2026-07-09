@@ -24,8 +24,9 @@ This document provides practical examples of using async/await with RPyC.
 >   purely synchronous services.
 > - `rpyc.connect()` raises `RuntimeError` when called from a running event
 >   loop, because it would block it. Use `await rpyc.async_connect(...)`.
-> - Close with `await conn.aclose()`, never `conn.close()` — the latter issues a
->   blocking request that the serving loop rejects.
+> - Close with `await conn.aclose()`, never `conn.close()` — the latter blocks the
+>   event loop waiting for a `HANDLE_CLOSE` reply that usually never arrives,
+>   until `sync_request_timeout` (30 s) expires.
 > - The server must run in a **separate OS process** from the client.
 
 ```python
@@ -292,6 +293,103 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### Fire-and-Forget Calls
+
+Sometimes you want to start a remote call and move on without awaiting its
+result. `fire_and_forget()` schedules the awaitable on the running loop and
+hands you the `asyncio.Task`, optionally routing the outcome to callbacks.
+
+> Import from `rpyc.utils.helpers` — these helpers are **not** re-exported at
+> the `rpyc` top level.
+
+```python
+import asyncio
+import rpyc
+from rpyc.utils.helpers import fire_and_forget, fire_and_forget_async
+
+def on_success(result):
+    print("done:", result)
+
+def on_error(exc):
+    print("failed:", type(exc).__name__, exc)
+
+async def main():
+    conn = await rpyc.async_connect("localhost", 18861)
+    try:
+        # 1. Start a call, keep going. Callbacks are plain functions.
+        fire_and_forget(
+            conn.root.slow_job(4),
+            success_callback=on_success,
+            error_callback=on_error,
+            name="slow_job",
+        )
+
+        # 2. Give up after 0.3 s — error_callback receives a TimeoutError.
+        fire_and_forget(
+            conn.root.very_slow_job(),
+            timeout=0.3,
+            error_callback=on_error,
+        )
+
+        # 3. The returned Task is a normal asyncio.Task: await or cancel it.
+        task = fire_and_forget(conn.root.slow_job(1))
+        await task
+
+        other = fire_and_forget(conn.root.very_slow_job())
+        other.cancel()  # CancelledError is NOT routed to error_callback
+
+        # Let the background work settle before closing the connection.
+        await asyncio.sleep(1)
+    finally:
+        await conn.aclose()
+
+asyncio.run(main())
+```
+
+Use `fire_and_forget_async()` when the callbacks themselves need to `await`:
+
+```python
+async def on_success(result):
+    await log_to_db(result)
+
+async def on_error(exc):
+    await alert(exc)
+
+fire_and_forget_async(
+    conn.root.slow_job(7),
+    success_callback=on_success,
+    error_callback=on_error,
+)
+```
+
+**Notes:**
+- Both helpers raise `RuntimeError` if no event loop is running.
+- The task resolves to **`None`**, never to the call's result. Awaiting it only
+  tells you the work finished; to read the value you must pass a
+  `success_callback`.
+- Awaiting the task does **not** re-raise a failure either. Without an
+  `error_callback` the exception is logged as
+  `ERROR: Unhandled exception in fire_and_forget: ...` and swallowed. Pass an
+  `error_callback` if you care.
+- `error_callback` is invoked for any exception **except** `CancelledError`,
+  which propagates to whoever awaits the task.
+- **Do not close the connection while a fire-and-forget call is in flight.**
+  Its reply can no longer arrive, so the task never completes and *neither*
+  callback ever runs — it just hangs.
+
+Await the tasks (or cancel them) before `await conn.aclose()`:
+
+```python
+tasks = [fire_and_forget(conn.root.slow_job(i)) for i in range(5)]
+await asyncio.gather(*tasks, return_exceptions=True)
+await conn.aclose()
+```
+
+**See:** [Fire-and-Forget Guide](guide_fire_and_forget.md) for backpressure,
+bidirectional callbacks and error-handling patterns.
+
+---
 
 ### Streaming Results
 

@@ -345,8 +345,9 @@ access to `conn.root` never blocks the event loop. It also enables asyncio servi
 so there is no need to call `enable_asyncio_serving()` yourself.
 
 Close with `await conn.aclose()`, **not** `conn.close()`. The synchronous `close()` issues a
-blocking `sync_request(HANDLE_CLOSE)`; on a connection that serves the running loop that
-request is rejected by a guard and raises `RuntimeError`.
+blocking `sync_request(HANDLE_CLOSE)` and waits for a reply that usually never arrives, so it
+freezes the event loop until `sync_request_timeout` expires (30 s by default). `aclose()`
+sends the same message event-driven and returns immediately.
 
 ---
 
