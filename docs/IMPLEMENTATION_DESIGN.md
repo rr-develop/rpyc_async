@@ -23,7 +23,7 @@
 
 ### Key Principles
 
-1. **Opt-In Design**: Async functionality is enabled explicitly via `enable_asyncio_serving()`
+1. **Opt-In Design**: Async functionality is activated explicitly via `enable_asyncio_serving()`
 2. **Zero-Cost Abstraction**: Sync code does not pay for async capabilities
 3. **Graceful Degradation**: Peers with different protocol capabilities work correctly
 4. **Thread-Safe**: All operations are safe when used from different threads
@@ -147,17 +147,18 @@ FLAGS_ASYNC = 0x01         # Bit 0: async function/coroutine
 # ═══════════════════════════════════════════════════════
 # NEW: Protocol Version
 # ═══════════════════════════════════════════════════════
-# Wire-protocol revision advertised by rpyc-async peers.
+# Wire-protocol revision. Bumped from (5, 0) for async support.
 # Independent of the package version (rpyc-async 1.0.0).
-PROTOCOL_VERSION_ASYNC = (1, 0)  # classic synchronous RPyC advertises none
+PROTOCOL_VERSION = (5, 1)
 ```
 
 **Design Decisions:**
 - Message type IDs start at 10 to avoid conflicts
 - Handler IDs start at 100 for clear separation
 - Flags use bitmask for future extensibility
-- Async-capable protocol revision is advertised explicitly; peers speaking the
-  classic synchronous RPyC protocol simply do not expose it
+- The wire-protocol revision keeps the upstream `(major, minor)` numbering and is
+  deliberately decoupled from the `rpyc-async` package version (1.0.0); peers
+  speaking the classic synchronous RPyC protocol advertise `(5, 0)` or older
 
 ---
 
@@ -982,18 +983,27 @@ rpyc-async:                 (class_name, obj_id, class_version, flags)
 - Legacy client → rpyc-async server: 3-tuple id_pack, flags=0x00 assumed
 - rpyc-async client → legacy server: async features unavailable; the async
   protocol revision is absent, so the client must not use async paths
-- Both directions: Protocol negotiation via HANDLE_GETATTR on ____protocol_version__
+- Both directions: Protocol negotiation via HANDLE_GETATTR on `____protocol_version__`
+  *(proposed only — not implemented, see "Protocol Negotiation Flow" below)*
 
 ### Protocol Negotiation Flow
+
+> ⚠️ **Not implemented.** What follows is a *design proposal*, not a description of
+> current behaviour. As of today `consts.PROTOCOL_VERSION` is declared, but it is
+> never transmitted or compared against anything; the `____protocol_version__`
+> attribute does not exist, and no version negotiation between peers takes place.
+> Both sides are required to use `rpyc-async`.
+
+Proposed scheme (requires exporting the version via netref):
 
 ```python
 # Client connects to server
 conn = rpyc.connect("localhost", 18861)
 
-# Check server protocol version
+# Check server protocol version (PROPOSED — attribute does not exist yet)
 try:
     server_version = conn.root.____protocol_version__
-    if server_version >= consts.PROTOCOL_VERSION_ASYNC:
+    if server_version >= (5, 1):
         # Server speaks the rpyc-async protocol
         conn.enable_asyncio_serving()
         supports_async = True
@@ -1017,7 +1027,7 @@ else:
 
 > **Important**: rpyc-async is an independent project. Compatibility with classic
 > synchronous RPyC at the API and protocol level is **not guaranteed**. The table
-> below describes the observed behaviour with mixed peers, not a contract.
+> below describes observed behaviour with mixed peers, not a contract.
 
 ### Interoperability Matrix
 
@@ -1032,6 +1042,8 @@ else:
 
 #### Strategy 1: Client Detection
 
+> ⚠️ **Not implemented** — depends on `____protocol_version__` (see above).
+
 ```python
 class AsyncAwareClient:
     def __init__(self, host, port):
@@ -1045,7 +1057,7 @@ class AsyncAwareClient:
         """Check if server supports the rpyc-async protocol."""
         try:
             version = self.conn.root.____protocol_version__
-            return version >= consts.PROTOCOL_VERSION_ASYNC
+            return version >= (5, 1)
         except AttributeError:
             return False
 
@@ -1595,7 +1607,7 @@ def test_sync_call_no_regression(async_connection):
 
 ### Risk Matrix
 
-| Risk | Likelihood | Impact | Mitigation |
+| Risk | Probability | Impact | Mitigation |
 |------|-------------|---------|-----------|
 | **Silent misbehaviour against legacy peers** | Medium | Critical | • Extensive interoperability tests<br>• Protocol negotiation<br>• Explicit errors instead of silent fallback |
 | **Event loop integration bugs** | High | High | • Thorough testing with different loops<br>• Use established patterns (add_reader)<br>• Code review by asyncio experts |

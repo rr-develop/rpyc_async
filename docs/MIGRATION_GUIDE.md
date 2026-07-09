@@ -232,16 +232,27 @@ class DBService(rpyc.Service):
 **After (async):**
 ```python
 import asyncpg
+from rpyc.utils.async_server import AsyncioServer
 
 class DBService(rpyc.Service):
-    async def on_connect_async(self):
-        self.pool = await asyncpg.create_pool(self.dsn)
+    def __init__(self, pool):
+        self.pool = pool
 
     async def exposed_query(self, sql):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(sql)
             return [dict(row) for row in rows]
+
+async def main(dsn):
+    pool = await asyncpg.create_pool(dsn)          # await once, before serving
+    server = AsyncioServer(DBService(pool), hostname="localhost", port=18861)
+    await server.serve_forever()
 ```
+
+There is **no async `on_connect` hook**. `Service.on_connect(conn)` is called
+synchronously and its return value is never awaited, so a coroutine defined there
+would never run. Acquire async resources (pools, sessions, clients) *before*
+starting the server and inject them into the service, as shown above.
 
 ---
 

@@ -1,4 +1,4 @@
-# RPyC Async/Await Documentation
+# rpyc-async Documentation
 
 **rpyc-async 1.0.0** is an asyncio-native fork of RPyC, providing native
 async/await support for reliable and efficient asynchronous remote procedure
@@ -270,12 +270,15 @@ See [Implementation Design](./IMPLEMENTATION_DESIGN.md) for technical details.
 
 ## License
 
-RPyC is released under the MIT License.
+`rpyc-async` is released under the MIT License, as is the upstream RPyC code it
+is derived from. See [LICENSE](../LICENSE).
 
 ---
 
 ## Support
 
-- **Issues:** https://github.com/tomerfiliba-org/rpyc/issues
-- **Docs:** https://rpyc.readthedocs.io/
-- **Community:** RPyC mailing list
+- **Issues:** https://github.com/rr-develop/rpyc_async/issues
+- **Source:** https://github.com/rr-develop/rpyc_async
+
+For questions about *classic synchronous* RPyC, refer to the upstream project at
+https://rpyc.readthedocs.io/ instead.
