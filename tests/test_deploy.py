@@ -15,6 +15,29 @@ except Exception:
     _paramiko_import_failed = True
 
 
+def _ssh_to_localhost_available():
+    """True if an SSH session to localhost can actually be established.
+
+    These deploy tests require a working SSH login to localhost (public-key
+    auth, sshd running). On hosts without it, SshMachine("localhost") fails
+    with SSHCommsError before any tested logic runs. Probe once at import time
+    and skip rather than report a spurious failure.
+    """
+    try:
+        rem = SshMachine("localhost")
+    except Exception:
+        return False
+    try:
+        rem.close()
+    except Exception:
+        pass
+    return True
+
+
+_ssh_available = _ssh_to_localhost_available()
+
+
+@unittest.skipUnless(_ssh_available, "SSH to localhost is not available")
 class TestDeploy(unittest.TestCase):
     def test_deploy(self):
         rem = SshMachine("localhost")

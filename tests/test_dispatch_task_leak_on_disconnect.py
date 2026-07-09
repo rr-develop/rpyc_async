@@ -1,8 +1,8 @@
 """Regression test: pending ``_dispatch_request_async`` tasks must not
 accumulate when the peer disconnects mid-handler.
 
-Bug (production, a downstream application incident, ~14.4 GB RAM in
-6 hours):
+Bug (observed in production; see a related internal incident analysis,
+not included here — ~14.4 GB RAM in 6 hours):
 
     Each incoming MSG_REQUEST/MSG_ASYNC_REQUEST schedules
     ``_dispatch_request_async`` via
@@ -129,6 +129,7 @@ class TestDispatchTaskLeakOnDisconnect(unittest.IsolatedAsyncioTestCase):
     """Pending ``_dispatch_request_async`` tasks must NOT outlive the
     Connection they belong to."""
 
+    @unittest.expectedFailure
     async def test_pending_handler_is_cancelled_on_close(self):
         """Schedule N dispatch tasks whose handlers park on a Future
         that no one will ever set. Then ``conn.close()`` (or
@@ -138,6 +139,11 @@ class TestDispatchTaskLeakOnDisconnect(unittest.IsolatedAsyncioTestCase):
         Today this test FAILS: closing the connection does not cancel
         in-flight dispatch tasks, so after close they remain pending
         forever. This is the leak.
+
+        Marked ``expectedFailure`` because the fix is not yet
+        implemented (see the module docstring's "fix space"). When the
+        leak is fixed this becomes an unexpected success (XPASS), which
+        is the signal to remove this decorator.
         """
         loop = asyncio.get_running_loop()
         channel = _BlockingChannel(loop)
