@@ -1,4 +1,10 @@
-# RPyC Async Support - Detailed Implementation Design
+# rpyc-async — Detailed Implementation Design
+
+> **Product**: `rpyc-async` (distribution name), the import name remains `rpyc`.
+> This is an asyncio-native fork, split off from upstream RPyC 6.0.1 and developed
+> as an independent project with its own version **1.0.0**.
+> Backward compatibility with classic synchronous RPyC is **not guaranteed**.
+> The minimum supported Python version is **3.10**.
 
 ## 📋 Table of Contents
 
@@ -6,7 +12,7 @@
 2. [Module Structure](#module-structure)
 3. [Detailed Component Design](#detailed-component-design)
 4. [Protocol Changes](#protocol-changes)
-5. [Backward Compatibility Strategy](#backward-compatibility-strategy)
+5. [Interoperability Strategy](#interoperability-strategy)
 6. [Implementation Plan](#implementation-plan)
 7. [Testing Strategy](#testing-strategy)
 8. [Risks and Mitigation](#risks-and-mitigation)
@@ -17,9 +23,9 @@
 
 ### Key Principles
 
-1. **Opt-In Design**: Async functionality is activated explicitly via `enable_asyncio_serving()`
+1. **Opt-In Design**: Async functionality is enabled explicitly via `enable_asyncio_serving()`
 2. **Zero-Cost Abstraction**: Sync code does not pay for async capabilities
-3. **Graceful Degradation**: Mixed versions work correctly
+3. **Graceful Degradation**: Peers with different protocol capabilities work correctly
 4. **Thread-Safe**: All operations are safe when used from different threads
 
 ### Architectural Layers
@@ -141,14 +147,17 @@ FLAGS_ASYNC = 0x01         # Bit 0: async function/coroutine
 # ═══════════════════════════════════════════════════════
 # NEW: Protocol Version
 # ═══════════════════════════════════════════════════════
-PROTOCOL_VERSION_ASYNC = (5, 1)  # Current: (5, 0)
+# Wire-protocol revision advertised by rpyc-async peers.
+# Independent of the package version (rpyc-async 1.0.0).
+PROTOCOL_VERSION_ASYNC = (1, 0)  # classic synchronous RPyC advertises none
 ```
 
 **Design Decisions:**
 - Message type IDs start at 10 to avoid conflicts
 - Handler IDs start at 100 for clear separation
 - Flags use bitmask for future extensibility
-- Protocol version bump: minor version (5.0 → 5.1)
+- Async-capable protocol revision is advertised explicitly; peers speaking the
+  classic synchronous RPyC protocol simply do not expose it
 
 ---
 
@@ -710,7 +719,7 @@ def _box(self, obj):
 - Separate handling for async functions vs coroutines
 - Warning on coroutine boxing (likely bug)
 - Extended id_pack format: `(class, id, ver, flags)`
-- Backward compatible: old code sends 3-tuple, new code handles both
+- Tolerant decoding: upstream RPyC peers send a 3-tuple, rpyc-async handles both shapes
 
 #### 4.2 Modified `_unbox()` Method
 
@@ -734,13 +743,13 @@ def _unbox(self, package):
         # ENHANCED: Handle extended id_pack format
         # ═══════════════════════════════════════════════════
 
-        # Check if extended format (4 elements) or old format (3)
+        # Check if extended format (4 elements) or legacy format (3)
         if len(value) == 4:
-            # New format: (class, id, ver, flags)
+            # rpyc-async format: (class, id, ver, flags)
             id_pack = (value[0], value[1], value[2])
             flags = value[3]
         elif len(value) == 3:
-            # Old format: (class, id, ver)
+            # classic synchronous RPyC format: (class, id, ver)
             id_pack = value
             flags = consts.FLAGS_SYNC  # Default: sync object
         else:
@@ -763,7 +772,7 @@ def _unbox(self, package):
 ```
 
 **Design Decisions:**
-- Backward compatible: handles both 3-tuple and 4-tuple id_packs
+- Tolerant decoding: handles both 3-tuple and 4-tuple id_packs
 - Metadata stored in proxy: `____is_async__` attribute
 - Bitmask flags for future extensibility (generators, context managers)
 
@@ -937,7 +946,7 @@ class BaseNetref(object):
 
 ### Message Format Extensions
 
-#### Old Format (v5.0)
+#### Legacy Format (classic synchronous RPyC)
 
 ```
 ┌──────────┬─────────┬─────────────────┐
@@ -946,7 +955,7 @@ class BaseNetref(object):
 └──────────┴─────────┴─────────────────┘
 ```
 
-#### New Format (v5.1) - Backward Compatible
+#### rpyc-async Format — Tolerant to Legacy Peers
 
 **Request Messages:**
 ```
@@ -961,17 +970,18 @@ class BaseNetref(object):
 
 **id_pack Extension:**
 ```
-Old (v5.0): (class_name, obj_id, class_version)
-            ↓
-New (v5.1): (class_name, obj_id, class_version, flags)
-                                                 ↑
-                                          Bit 0: FLAGS_ASYNC
-                                          Bit 1-7: Reserved
+Legacy (classic sync RPyC): (class_name, obj_id, class_version)
+                            ↓
+rpyc-async:                 (class_name, obj_id, class_version, flags)
+                                                                 ↑
+                                                          Bit 0: FLAGS_ASYNC
+                                                          Bit 1-7: Reserved
 ```
 
-**Backward Compatibility:**
-- Old client → New server: 3-tuple id_pack, flags=0x00 assumed
-- New client → Old server: Old server ignores 4th element (sees as extra data)
+**Wire Interoperability (best-effort, not a compatibility guarantee):**
+- Legacy client → rpyc-async server: 3-tuple id_pack, flags=0x00 assumed
+- rpyc-async client → legacy server: async features unavailable; the async
+  protocol revision is absent, so the client must not use async paths
 - Both directions: Protocol negotiation via HANDLE_GETATTR on ____protocol_version__
 
 ### Protocol Negotiation Flow
@@ -983,15 +993,15 @@ conn = rpyc.connect("localhost", 18861)
 # Check server protocol version
 try:
     server_version = conn.root.____protocol_version__
-    if server_version >= (5, 1):
-        # Server supports async
+    if server_version >= consts.PROTOCOL_VERSION_ASYNC:
+        # Server speaks the rpyc-async protocol
         conn.enable_asyncio_serving()
         supports_async = True
     else:
-        # Old server - no async
+        # Peer predates the async protocol revision
         supports_async = False
 except AttributeError:
-    # Very old server (no version attribute)
+    # classic synchronous RPyC server (no async protocol attribute)
     supports_async = False
 
 # Use appropriate API
@@ -1003,16 +1013,20 @@ else:
 
 ---
 
-## Backward Compatibility Strategy
+## Interoperability Strategy
 
-### Compatibility Matrix
+> **Important**: rpyc-async is an independent project. Compatibility with classic
+> synchronous RPyC at the API and protocol level is **not guaranteed**. The table
+> below describes the observed behaviour with mixed peers, not a contract.
+
+### Interoperability Matrix
 
 | Client | Server | Async Calls | Async Callbacks | Notes |
 |--------|--------|-------------|-----------------|-------|
-| v5.1 | v5.1 | ✅ Full | ✅ Full | Optimal performance |
-| v5.1 | v5.0 | ❌ Degrade | ❌ Fail | Client detects, falls back to sync |
-| v5.0 | v5.1 | N/A | N/A | Old client unaware of async |
-| v5.0 | v5.0 | N/A | N/A | Existing behavior unchanged |
+| rpyc-async | rpyc-async | ✅ Full | ✅ Full | Optimal performance |
+| rpyc-async | classic sync RPyC | ❌ Degrade | ❌ Fail | Client detects, falls back to sync |
+| classic sync RPyC | rpyc-async | N/A | N/A | Legacy client unaware of async |
+| classic sync RPyC | classic sync RPyC | N/A | N/A | Out of scope for this project |
 
 ### Graceful Degradation Strategies
 
@@ -1028,10 +1042,10 @@ class AsyncAwareClient:
             self.conn.enable_asyncio_serving()
 
     def _detect_async_support(self):
-        """Check if server supports async protocol."""
+        """Check if server supports the rpyc-async protocol."""
         try:
             version = self.conn.root.____protocol_version__
-            return version >= (5, 1)
+            return version >= consts.PROTOCOL_VERSION_ASYNC
         except AttributeError:
             return False
 
@@ -1047,16 +1061,16 @@ class AsyncAwareClient:
 
 ```python
 class CompatibleService(rpyc.Service):
-    """Service that works with both old and new clients."""
+    """Service that tolerates both legacy and rpyc-async clients."""
 
     def exposed_process(self, callback):
         """
         Process callback (sync or async).
 
         Works with:
-        - Old client + sync callback: ✅
-        - New client + async callback: ✅
-        - Old client + async callback: ❌ (client error)
+        - Legacy client + sync callback: ✅
+        - rpyc-async client + async callback: ✅
+        - Legacy client + async callback: ❌ (client error)
         """
         # Check if callback is async
         is_async = getattr(callback, '____is_async__', False)
@@ -1081,25 +1095,24 @@ class CompatibleService(rpyc.Service):
 - ✅ Add new constants
 - ✅ Implement async handlers
 - ✅ Add protocol version attribute
-- ⚠️ NO breaking changes yet
 
 #### Phase 2: Opt-In Features (Week 3-4)
 - ✅ Implement `enable_asyncio_serving()`
 - ✅ Add `AsyncResult.__await__()`
 - ✅ Enhanced boxing/unboxing
-- ⚠️ All features opt-in, backward compatible
+- ⚠️ Async features are opt-in within rpyc-async
 
 #### Phase 3: Testing & Validation (Week 5-6)
-- ✅ Integration tests for all compatibility scenarios
+- ✅ Integration tests for all interoperability scenarios
 - ✅ Performance benchmarks
 - ✅ Security audit
 - ✅ Documentation updates
 
 #### Phase 4: Rollout (Week 7+)
-- ✅ Release v5.1 with deprecation warnings
+- ✅ Release rpyc-async 1.0.0
 - ✅ Update examples and tutorials
 - ✅ Monitor production deployments
-- ⚠️ v6.0 may make async default (18+ months later)
+- ⚠️ A future major release may make async the default execution mode
 
 ---
 
@@ -1208,15 +1221,15 @@ class CompatibleService(rpyc.Service):
 - [ ] Modify `_box()` for async functions
 - [ ] Add coroutine boxing with warning
 - [ ] Modify `_unbox()` for extended id_pack
-- [ ] Backward compatibility for 3-tuple id_pack
+- [ ] Tolerant decoding of 3-tuple id_pack
 - [ ] Unit tests
 
 **Acceptance Criteria:**
 - Async functions boxed with FLAGS_ASYNC
-- Old 3-tuple id_packs handled correctly
-- New 4-tuple id_packs created correctly
+- Legacy 3-tuple id_packs handled correctly
+- Extended 4-tuple id_packs created correctly
 - Warning emitted for coroutine boxing
-- Tests cover both directions (old↔new)
+- Tests cover both directions (legacy↔rpyc-async)
 
 ### Phase 3: AsyncResult & Netref (5-7 days)
 
@@ -1269,8 +1282,8 @@ Test scenarios:
 - [ ] Mixed sync/async calls
 - [ ] Exception propagation
 - [ ] Concurrent calls (1000+)
-- [ ] Old client ↔ New server
-- [ ] New client ↔ Old server
+- [ ] Legacy client ↔ rpyc-async server
+- [ ] rpyc-async client ↔ legacy server
 - [ ] Connection close during async call
 - [ ] Event loop shutdown during call
 
@@ -1303,13 +1316,13 @@ Benchmarks:
 
 - [ ] API reference updates
 - [ ] Tutorial: "Async RPyC Guide"
-- [ ] Migration guide (v5.0 → v5.1)
+- [ ] Migration guide (classic synchronous RPyC → rpyc-async)
 - [ ] Examples directory
 - [ ] Changelog entry
 
 **Deliverables:**
 - `docs/async_guide.rst`
-- `docs/migration_v5.1.rst`
+- `docs/migration_to_rpyc_async.rst`
 - `examples/async_server.py`
 - `examples/async_client.py`
 - `examples/async_callbacks.py`
@@ -1383,7 +1396,7 @@ Benchmarks:
 **Boxing/Unboxing** (30 tests)
 - Box async function → 4-tuple id_pack
 - Unbox 4-tuple → proxy with metadata
-- Unbox 3-tuple → proxy without metadata (backward compat)
+- Unbox 3-tuple → proxy without metadata (legacy peer)
 - Box coroutine → warning emitted
 - Round-trip tests
 
@@ -1423,11 +1436,11 @@ Benchmarks:
 - Concurrent async calls (10, 100, 1000)
 - Mixed sync/async calls
 
-**Cross-Version Compatibility** (15 tests)
-- New client → Old server (graceful degradation)
-- Old client → New server (backward compat)
+**Cross-Peer Interoperability** (15 tests)
+- rpyc-async client → legacy server (graceful degradation)
+- Legacy client → rpyc-async server (tolerant decoding)
 - Protocol negotiation
-- Version detection
+- Protocol revision detection
 
 **Error Handling** (10 tests)
 - Connection close during async call
@@ -1582,9 +1595,9 @@ def test_sync_call_no_regression(async_connection):
 
 ### Risk Matrix
 
-| Risk | Probability | Impact | Mitigation |
+| Risk | Likelihood | Impact | Mitigation |
 |------|-------------|---------|-----------|
-| **Breaking backward compatibility** | Medium | Critical | • Extensive compatibility tests<br>• Protocol negotiation<br>• Deprecation warnings |
+| **Silent misbehaviour against legacy peers** | Medium | Critical | • Extensive interoperability tests<br>• Protocol negotiation<br>• Explicit errors instead of silent fallback |
 | **Event loop integration bugs** | High | High | • Thorough testing with different loops<br>• Use established patterns (add_reader)<br>• Code review by asyncio experts |
 | **Deadlock in async dispatch** | Medium | High | • Careful lock analysis<br>• Deadlock detection tests<br>• Timeout mechanisms |
 | **Memory leaks (AsyncResult)** | Medium | Medium | • Memory profiling tests<br>• Weak references where appropriate<br>• Cleanup on close |
@@ -1594,32 +1607,36 @@ def test_sync_call_no_regression(async_connection):
 
 ### Detailed Mitigation Strategies
 
-#### 1. Backward Compatibility
+#### 1. Interoperability with Legacy Peers
 
 **Risks:**
-- Old clients break with new server
-- Old servers reject new clients
-- Subtle behavioral changes
+- Legacy clients break against an rpyc-async server
+- Legacy servers reject rpyc-async clients
+- Subtle behavioral changes go unnoticed
+
+**Note**: rpyc-async does not promise compatibility with classic synchronous
+RPyC. The goal here is *predictable failure* and best-effort degradation, not
+a compatibility contract.
 
 **Mitigation:**
-- **Compatibility Test Matrix**: Test all 4 combinations (old/new × client/server)
+- **Interoperability Test Matrix**: Test all 4 combinations (legacy/rpyc-async × client/server)
 - **Protocol Negotiation**: Clients detect server capabilities before using async
-- **Graceful Degradation**: New clients fall back to sync with old servers
-- **Beta Testing**: Release v5.1-beta for 4+ weeks before stable
-- **Deprecation Warnings**: Warn users about upcoming changes
+- **Graceful Degradation**: rpyc-async clients fall back to sync against legacy servers
+- **Beta Testing**: Release rpyc-async 1.0.0b1 for 4+ weeks before stable
+- **Clear Errors**: Fail loudly when an async feature is unavailable on the peer
 
 **Test Coverage:**
 ```python
-# tests/compatibility/test_versions.py
+# tests/interop/test_peers.py
 
-def test_new_client_old_server():
-    """New client should work with old server (no async)."""
-    # Mock old server (v5.0) without async support
+def test_rpyc_async_client_legacy_server():
+    """rpyc-async client should degrade against a legacy server (no async)."""
+    # Mock classic synchronous RPyC server without async support
     # Client detects and uses sync mode
 
-def test_old_client_new_server():
-    """Old client should work with new server (unchanged behavior)."""
-    # Use actual old RPyC client
+def test_legacy_client_rpyc_async_server():
+    """Legacy client should still interoperate with an rpyc-async server."""
+    # Use an actual upstream RPyC client
     # Server handles 3-tuple id_packs correctly
 ```
 
@@ -1757,29 +1774,29 @@ async def test_no_memory_leak():
 - [ ] `tests/integration/test_async_dispatch.py` - Dispatch tests
 - [ ] `tests/integration/test_async_calls.py` - E2E async calls
 - [ ] `tests/integration/test_async_callbacks.py` - Callback tests
-- [ ] `tests/compatibility/test_versions.py` - Version compatibility
+- [ ] `tests/interop/test_peers.py` - Legacy peer interoperability
 - [ ] `tests/performance/benchmark_async.py` - Performance benchmarks
 
 ### Documentation
 
 - [ ] `docs/async_guide.rst` - Complete async guide
-- [ ] `docs/migration_v5.1.rst` - Migration guide
+- [ ] `docs/migration_to_rpyc_async.rst` - Migration guide
 - [ ] `docs/api/async_.rst` - API reference updates
 - [ ] `examples/async_server.py` - Example async server
 - [ ] `examples/async_client.py` - Example async client
 - [ ] `examples/async_callbacks.py` - Example callbacks
 - [ ] `examples/async_recursion.py` - Example recursion
-- [ ] `CHANGELOG.md` - Version 5.1 entry
+- [ ] `CHANGELOG.md` - rpyc-async 1.0.0 entry
 - [ ] `README.md` - Async feature mention
 
 ### Release
 
-- [ ] Version bump to 5.1.0
-- [ ] Beta release (5.1.0-beta1)
+- [ ] Version bump to 1.0.0 (distribution: `rpyc-async`)
+- [ ] Beta release (1.0.0b1)
 - [ ] Beta testing period (4 weeks)
 - [ ] Security audit
 - [ ] Performance validation
-- [ ] Stable release (5.1.0)
+- [ ] Stable release (1.0.0)
 
 ---
 
@@ -1821,8 +1838,8 @@ Week 8: Security & Hardening (Phase 5)
 | M2: Protocol Enhancement | Week 4 | Async dispatch pipeline functional |
 | M3: API Complete | Week 5 | AsyncResult.__await__() working |
 | M4: Integration Tested | Week 7 | All tests passing, docs complete |
-| M5: Beta Release | Week 8 | v5.1.0-beta1 published |
-| M6: Stable Release | Week 12 | v5.1.0 stable after beta testing |
+| M5: Beta Release | Week 8 | rpyc-async 1.0.0b1 published |
+| M6: Stable Release | Week 12 | rpyc-async 1.0.0 stable after beta testing |
 
 ---
 
@@ -1833,8 +1850,8 @@ Week 8: Security & Hardening (Phase 5)
 - ✅ Async exposed methods can be called with `await`
 - ✅ Async callbacks can be passed and executed
 - ✅ Recursive async calls work (depth 10+)
-- ✅ 100% backward compatibility (old code unchanged)
-- ✅ All 4 version combinations work correctly
+- ✅ Legacy peers either interoperate or fail with a clear, documented error
+- ✅ All 4 peer combinations behave as described in the interoperability matrix
 
 ### Performance
 
@@ -1871,7 +1888,7 @@ Week 8: Security & Hardening (Phase 5)
 - [ ] Documentation updated
 - [ ] Changelog entry added
 - [ ] Performance budget met
-- [ ] Backward compatibility verified
+- [ ] Legacy-peer interoperability verified
 - [ ] Thread-safety reviewed
 - [ ] Memory management reviewed
 
@@ -1890,13 +1907,13 @@ Week 8: Security & Hardening (Phase 5)
 - [ ] cProfile async calls
 - [ ] Memory profiler (concurrent calls)
 - [ ] py-spy flamegraph (async dispatch)
-- [ ] Benchmark comparison (v5.0 vs v5.1)
+- [ ] Benchmark comparison (classic synchronous RPyC vs rpyc-async)
 
 ### D. References
 
 - [PEP 492 - Coroutines with async/await](https://www.python.org/dev/peps/pep-0492/)
 - [asyncio Event Loop Docs](https://docs.python.org/3/library/asyncio-eventloop.html)
-- [RPyC Protocol Spec (v5.0)](https://rpyc.readthedocs.io/)
+- [Upstream RPyC Protocol Spec](https://rpyc.readthedocs.io/)
 - [ASYNC_SUPPORT_PROPOSAL_V2.md](./ASYNC_SUPPORT_PROPOSAL_V2.md)
 - [ASYNC_DISPATCH_PIPELINE_EXPLAINED.md](./ASYNC_DISPATCH_PIPELINE_EXPLAINED.md)
 

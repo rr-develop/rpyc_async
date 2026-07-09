@@ -2,9 +2,13 @@
 
 ## Project Overview
 
-**Goal:** Add native async/await support to RPyC (Remote Python Call) library
+**Goal:** Provide native async/await support in `rpyc-async`, an asyncio-native fork of RPyC (Remote Python Call), forked from upstream RPyC 6.0.1.
 
-**Version:** RPyC 5.0 → 5.1
+**Distribution:** `rpyc-async` (import name remains `rpyc`)
+
+**Version:** 1.0.0
+
+**Requires:** Python 3.10+
 
 **Status:** ✅ **COMPLETE**
 
@@ -17,7 +21,7 @@
 ### ✅ Phase 1: Core Infrastructure (100% Complete)
 
 **Deliverables:**
-- Protocol version bumped to v5.1
+- Protocol version bumped for async support
 - New message types (MSG_ASYNC_REQUEST, MSG_ASYNC_REPLY, MSG_ASYNC_EXCEPTION)
 - New handler constants (HANDLE_ASYNC_CALL, HANDLE_ASYNC_CALLATTR)
 - Async handler module (`rpyc/core/async_handlers.py`)
@@ -118,7 +122,7 @@ more complex setup with bidirectional asyncio serving.
 **Deliverables:**
 - Comprehensive API reference documentation
 - Practical usage examples
-- Migration guide from v5.0 to v5.1
+- Migration guide from classic synchronous RPyC to `rpyc-async`
 - Quick start README
 
 **Files Created:**
@@ -170,7 +174,7 @@ more complex setup with bidirectional asyncio serving.
 **Extended id_pack Format:**
 - **Old:** 3-tuple `(class_name, obj_id, class_version)`
 - **New:** 4-tuple `(class_name, obj_id, class_version, flags)`
-- **Backward Compatible:** Detects 3-tuple and defaults to FLAGS_SYNC
+- **Tolerant unboxing:** A 3-tuple is detected and defaults to FLAGS_SYNC
 
 **Dual Dispatch Pipeline:**
 ```
@@ -233,8 +237,8 @@ async def serve_until_ready():
 
 | Implementation | Time | Throughput | Improvement |
 |----------------|------|------------|-------------|
-| RPyC 5.0 (sync) | ~100s | 1 req/s | Baseline |
-| RPyC 5.1 (async) | ~1s | 100 req/s | **100x faster** |
+| Classic synchronous RPyC | ~100s | 1 req/s | Baseline |
+| rpyc-async (async) | ~1s | 100 req/s | **100x faster** |
 
 **Conclusion:** Async/await provides massive performance improvement for I/O-bound workloads.
 
@@ -258,23 +262,22 @@ async def serve_until_ready():
 
 ---
 
-## Backward Compatibility
+## Compatibility
 
-### 100% Backward Compatible ✅
+### No Compatibility with Classic Synchronous RPyC ⚠️
 
-**Existing Code Works Unchanged:**
-- All RPyC 5.0 sync methods continue to work
-- No breaking changes to API
-- Protocol version detection for graceful degradation
+`rpyc-async` is an asyncio-native fork. Interoperability with classic
+synchronous RPyC — at the API level or over the wire — is **not guaranteed**.
+Code written against classic synchronous RPyC may require changes; see the
+migration guide.
 
-**Compatibility Matrix:**
+**Within `rpyc-async`:**
 
 | Client | Server | Sync Methods | Async Methods |
 |--------|--------|--------------|---------------|
-| v5.1 | v5.1 | ✅ Works | ✅ Works |
-| v5.1 | v5.0 | ✅ Works | ❌ N/A |
-| v5.0 | v5.1 | ✅ Works | ❌ N/A |
-| v5.0 | v5.0 | ✅ Works | ❌ N/A |
+| rpyc-async | rpyc-async | ✅ Works | ✅ Works |
+
+Sync and async methods may be freely mixed within a single service.
 
 ---
 
@@ -322,7 +325,7 @@ async def exposed_async_generator(self):
         yield i  # Not supported
 ```
 
-**Future Work:** Could be added in v5.2
+**Future Work:** Could be added in a future release
 
 ---
 
@@ -353,9 +356,9 @@ async def exposed_async_generator(self):
 
 ---
 
-## Future Enhancements (Post v5.1)
+## Future Enhancements (Post 1.0.0)
 
-### Potential v5.2 Features
+### Potential Future Features
 
 1. **Async Generators/Iterators**
    - Support for `async for` over remote iterables
@@ -380,8 +383,7 @@ async def exposed_async_generator(self):
 ### Implementation Status: ✅ COMPLETE
 
 **What Was Achieved:**
-- ✅ Full async/await support for RPyC
-- ✅ 100% backward compatibility maintained
+- ✅ Full async/await support in `rpyc-async`
 - ✅ 68 tests passing (all green)
 - ✅ Comprehensive documentation (1900+ lines)
 - ✅ 100x performance improvement for I/O workloads
@@ -415,18 +417,16 @@ All phases completed according to design:
 - ✅ Phase 4: Integration Tests (90%)
 - ✅ Phase 5: Documentation (100%)
 
-**Result:** Production-ready async/await support for RPyC! 🎉
+**Result:** Production-ready async/await support in `rpyc-async`! 🎉
 
 ---
 
 ## Contact & Support
 
+- **Distribution:** `rpyc-async` (import name: `rpyc`)
 - **Documentation:** `docs/`
 - **Tests:** `tests/`
-- **Branch:** async_support
 
 ---
-
-**Implementation Date:** 2025
 
 **Final Status:** ✅ **READY FOR PRODUCTION**

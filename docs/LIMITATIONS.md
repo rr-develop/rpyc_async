@@ -1,8 +1,11 @@
-# RPyC Async/Await - Known Limitations
+# rpyc-async — Known Limitations
 
 ## Overview
 
-RPyC 5.1 provides async/await support with the following status:
+`rpyc-async` 1.0.0 (asyncio-native fork of upstream RPyC) provides async/await support with the following status:
+
+> **Note:** `rpyc-async` is an independent distribution (`pip install rpyc-async`, import name `rpyc`).
+> Backward compatibility with classic synchronous RPyC is **not** guaranteed.
 
 **✅ Fully Supported:**
 - Client → Server async calls (unidirectional)
@@ -309,7 +312,7 @@ async def exposed_get_items(self):
     return items  # ✅ Works
 ```
 
-**Future Work:** Could be added in RPyC 5.2
+**Future Work:** Could be added in a future `rpyc-async` release
 
 ---
 
@@ -442,7 +445,7 @@ result = await conn_a_to_b.root.async_method()
 **✅ Good for:**
 - Unidirectional async (Client → Server)
 - Simple async use cases
-- Legacy sync codebases
+- Predominantly synchronous services (sync-style handlers)
 
 **❌ Cannot support:**
 - Bidirectional async (architectural limitation)

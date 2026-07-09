@@ -1,5 +1,14 @@
 Contributors for newer versions are visible from the git commit history.
 
+rpyc-async (asyncio-native fork)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+* Roman Rodionov - asyncio-native rewrite: AsyncioServer, async client
+  (async_connect), event-driven no-polling connection, reference-counting
+  lifecycle fixes, and async support
+
+Upstream RPyC contributors
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
 v3.2.3
 ^^^^^^
 * Guy Rozendorn - backported lots of fixes from 3.3 branch

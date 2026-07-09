@@ -1,3 +1,28 @@
+1.0.0 (rpyc-async)
+==================
+Date: 2026-07-09
+
+First release of rpyc-async, an asyncio-native fork of RPyC focused on
+reliable and efficient asynchronous inter-process calls. Versioned
+independently of upstream RPyC; forked from upstream RPyC 6.0.1.
+
+- Native asyncio server (``AsyncioServer``) with bidirectional async calls
+  (server can call the client's async callbacks).
+- Async client (``async_connect`` / ``aclose``); calling the synchronous
+  ``connect()`` from within an asyncio event loop now raises with a pointer
+  to ``async_connect``.
+- Event-driven, no-polling connection: removed the periodic ``asyncio.sleep``
+  poll loops that burned CPU; readiness/close are signalled via event-driven
+  primitives.
+- Reference-counting lifecycle fixes: PID-namespaced ``id_pack`` to avoid
+  cross-process collisions, cancel/cleanup of in-flight dispatch tasks on
+  close, and fixes for netref/AsyncResult leaks.
+- Per-connection inbound dispatch backpressure (quarantine hook).
+- Note: backward compatibility with the classic synchronous RPyC API is not
+  guaranteed.
+
+Upstream RPyC history below.
+
 6.0.1
 =====
 Date: 2024-09-24

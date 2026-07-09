@@ -1,32 +1,52 @@
-# Migration Guide: RPyC 5.0 → 5.1 (Async/Await)
+# Migration Guide: moving to the asyncio-native API (rpyc-async)
 
-This guide helps you migrate from RPyC 5.0 to 5.1 with async/await support.
+This guide helps you move existing RPC code onto **rpyc-async 1.0.0**, the asyncio-native
+fork of RPyC (forked from upstream RPyC 6.0.1).
 
 ## Overview
 
-**RPyC 5.1** adds native async/await support while maintaining **100% backward compatibility** with v5.0.
+`rpyc-async` is a **separate product**, not a drop-in upgrade of classic synchronous RPyC.
+It is built around `async_connect()` and `AsyncioServer`, and a persistent event loop drives
+the connection on both ends.
 
 **Key Points:**
-- ✅ All existing v5.0 code continues to work unchanged
-- ✅ Sync and async methods can coexist in same service
-- ✅ No breaking changes
-- ✅ Opt-in async support
+- Backward compatibility with classic synchronous RPyC is **not guaranteed**
+- The import name stays `import rpyc`; only the distribution name changes
+- Async services, async clients and bidirectional async callbacks are first-class
+- Requires Python 3.10 or newer
+
+**Installation:**
+
+```bash
+pip install rpyc-async     # distribution name
+```
+
+```python
+import rpyc                # import name is unchanged
+```
+
+If you need the classic synchronous behaviour, install upstream RPyC instead
+(`pip install rpyc`). Both distributions provide the same import name, so install only one
+of them per environment.
 
 ---
 
 ## Quick Start
 
-### Before (RPyC 5.0)
+### Before (classic synchronous RPyC)
 
 ```python
 # server.py
 import rpyc
+from rpyc.utils.server import ThreadedServer
 import time
 
 class MyService(rpyc.Service):
     def exposed_slow_operation(self):
         time.sleep(1)  # Blocks thread!
         return "done"
+
+ThreadedServer(MyService, port=18861).start()
 ```
 
 ```python
@@ -38,31 +58,42 @@ result = conn.root.slow_operation()  # Blocks for 1 second
 print(result)
 ```
 
-### After (RPyC 5.1)
+### After (rpyc-async)
 
 ```python
 # server.py
 import rpyc
 import asyncio
+from rpyc.utils.async_server import AsyncioServer
 
 class MyService(rpyc.Service):
     async def exposed_slow_operation(self):
         await asyncio.sleep(1)  # Non-blocking!
         return "done"
+
+async def main():
+    server = AsyncioServer(MyService, hostname="localhost", port=18861)
+    await server.serve_forever()
+
+asyncio.run(main())
 ```
 
 ```python
 # client.py
 import rpyc
 import asyncio
+from rpyc.core.async_connect import async_connect
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await async_connect("localhost", 18861)
     result = await conn.root.slow_operation()  # Awaitable!
     print(result)
 
 asyncio.run(main())
 ```
+
+`async_connect`, `AsyncioServer` and `run_async_server` are also re-exported from the
+top-level package (`rpyc.async_connect`, `rpyc.AsyncioServer`, `rpyc.run_async_server`).
 
 ---
 
@@ -70,13 +101,13 @@ asyncio.run(main())
 
 ### Strategy 1: Gradual Migration (Recommended)
 
-Migrate one method at a time while keeping service running.
+Port one method at a time while the service keeps running.
 
-**Step 1:** Add async methods alongside sync methods
+**Step 1:** Add async methods alongside the existing ones
 
 ```python
 class MyService(rpyc.Service):
-    # Existing sync method (keep for backward compat)
+    # Existing synchronous method (still callable while you migrate)
     def exposed_fetch_data(self, url):
         import requests
         response = requests.get(url)
@@ -90,53 +121,56 @@ class MyService(rpyc.Service):
                 return await response.text()
 ```
 
-**Step 2:** Update clients gradually
+**Step 2:** Update call sites gradually
 
 ```python
-# Old clients still use sync method
+# Not-yet-migrated call sites keep using the sync method
 result = conn.root.fetch_data("https://example.com")
 
-# New clients use async method
+# Migrated call sites use the async method
 result = await conn.root.async_fetch_data("https://example.com")
 ```
 
-**Step 3:** Deprecate sync methods after all clients migrated
+**Step 3:** Remove the synchronous methods once every call site is migrated
+
+Synchronous methods still block the server's event loop. Treat them as a temporary bridge,
+not a supported long-term mode.
 
 ---
 
 ### Strategy 2: Parallel Services
 
-Run both v5.0 and v5.1 services on different ports.
+Run the legacy service and the asyncio-native service on different ports during the
+transition, with the legacy one served by upstream RPyC in its own environment.
 
 ```python
-# server_v5.py (port 18860) - Legacy
+# server_legacy.py (port 18860) - classic synchronous RPyC, separate environment
 class LegacyService(rpyc.Service):
     def exposed_method(self):
         return "sync"
 
-# server_v51.py (port 18861) - Async
+# server_async.py (port 18861) - rpyc-async + AsyncioServer
 class AsyncService(rpyc.Service):
     async def exposed_method(self):
         return "async"
 ```
 
-Clients connect to appropriate port based on their version.
+Clients connect to the port matching the stack they have been migrated to.
 
 ---
 
 ### Strategy 3: Feature Flag
 
-Use feature flag to enable async behavior.
+Use a feature flag to switch a call path over to the async implementation.
 
 ```python
 class HybridService(rpyc.Service):
     def __init__(self, enable_async=False):
         self.enable_async = enable_async
 
-    def exposed_process(self, data):
+    async def exposed_process(self, data):
         if self.enable_async:
-            import asyncio
-            return asyncio.run(self._async_process(data))
+            return await self._async_process(data)
         else:
             return self._sync_process(data)
 
@@ -146,7 +180,7 @@ class HybridService(rpyc.Service):
 
     def _sync_process(self, data):
         import time
-        time.sleep(0.1)
+        time.sleep(0.1)  # Blocks the event loop - migrate this away
         return f"Sync: {data}"
 ```
 
@@ -283,14 +317,20 @@ conn.close()
 ```python
 import rpyc
 import asyncio
+from rpyc.core.async_connect import async_connect
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
-    result = await conn.root.method()
-    conn.close()
+    conn = await async_connect("localhost", 18861)
+    try:
+        result = await conn.root.method()
+    finally:
+        conn.close()
 
 asyncio.run(main())
 ```
+
+`async_connect()` performs a non-blocking TCP connect and an eager handshake, so the first
+access to `conn.root` never blocks the event loop.
 
 ---
 
@@ -339,8 +379,6 @@ Error handling is the same!
 
 ## Testing
 
-### Unit Tests
-
 **Before:**
 ```python
 import unittest
@@ -356,49 +394,38 @@ class TestMyService(unittest.TestCase):
 **After:**
 ```python
 import unittest
-import asyncio
-
-class TestMyService(unittest.TestCase):
-    def test_method(self):
-        async def run_test():
-            conn = rpyc.connect("localhost", 18861)
-            result = await conn.root.method()
-            self.assertEqual(result, "expected")
-            conn.close()
-
-        asyncio.run(run_test())
-```
-
-Or use `unittest.IsolatedAsyncioTestCase` (Python 3.8+):
-
-```python
-import unittest
+from rpyc.core.async_connect import async_connect
 
 class TestMyService(unittest.IsolatedAsyncioTestCase):
     async def test_method(self):
-        conn = rpyc.connect("localhost", 18861)
-        result = await conn.root.method()
-        self.assertEqual(result, "expected")
-        conn.close()
+        conn = await async_connect("localhost", 18861)
+        try:
+            result = await conn.root.method()
+            self.assertEqual(result, "expected")
+        finally:
+            conn.close()
 ```
+
+`unittest.IsolatedAsyncioTestCase` is the recommended base class; it is available on every
+supported Python version (3.10+).
 
 ---
 
 ## Performance Considerations
 
-### When to Migrate
+### What benefits most
 
-**Migrate to async when:**
-- ✅ Service performs I/O operations (network, disk, database)
-- ✅ Service calls other async APIs
-- ✅ Need to handle many concurrent requests efficiently
-- ✅ Methods have high latency
+**Async pays off when:**
+- The method performs I/O (network, disk, database)
+- The method calls other async APIs
+- You need to handle many concurrent requests efficiently
+- Methods have high latency
 
-**Keep sync when:**
-- ❌ Methods are CPU-bound computations
-- ❌ Methods are simple getters/setters
-- ❌ Methods complete immediately (<1ms)
-- ❌ No async dependencies available
+**Async gains little when:**
+- Methods are CPU-bound computations (offload them to a thread or process pool)
+- Methods are simple getters/setters
+- Methods complete immediately (<1ms)
+- No async dependency is available for the underlying library
 
 ---
 
@@ -407,7 +434,7 @@ class TestMyService(unittest.IsolatedAsyncioTestCase):
 **Benchmark: 100 concurrent requests**
 
 ```python
-# Sync version (sequential processing)
+# Blocking implementation (sequential processing)
 # Time: ~100 seconds (1 second per request)
 
 class SyncService(rpyc.Service):
@@ -417,7 +444,7 @@ class SyncService(rpyc.Service):
 ```
 
 ```python
-# Async version (concurrent processing)
+# Async implementation (concurrent processing)
 # Time: ~1 second (all concurrent)
 
 class AsyncService(rpyc.Service):
@@ -426,22 +453,15 @@ class AsyncService(rpyc.Service):
         return data
 ```
 
-**Result:** 100x improvement for I/O-bound workloads!
+**Result:** large improvement for I/O-bound workloads.
 
 ---
 
-## Compatibility Matrix
+## Compatibility
 
-### Client vs Server
-
-| Client Version | Server Version | Sync Methods | Async Methods |
-|----------------|----------------|--------------|---------------|
-| 5.1            | 5.1            | ✅ Works     | ✅ Works      |
-| 5.1            | 5.0            | ✅ Works     | ❌ Fails      |
-| 5.0            | 5.1 (sync)     | ✅ Works     | N/A           |
-| 5.0            | 5.1 (async)    | ❌ Fails     | N/A           |
-
-**Recommendation:** Upgrade both client and server to v5.1 for full async support.
+Both ends of the connection must run `rpyc-async`: an async client created with
+`async_connect()` talking to a server built on `AsyncioServer`. Mixing `rpyc-async` with
+upstream RPyC on the other end of the wire is not a supported configuration.
 
 ---
 
@@ -479,6 +499,8 @@ async def exposed_method(self):
     return "done"
 ```
 
+For unavoidable blocking calls, use `await asyncio.to_thread(blocking_call, ...)`.
+
 ---
 
 ### 3. Mixing Sync/Async Incorrectly
@@ -491,12 +513,12 @@ def sync_method(self):
 
 **Correct:**
 ```python
-def sync_method(self):
-    result = asyncio.run(self.async_helper())  # OK
-
 async def async_method(self):
     result = await self.async_helper()  # OK
 ```
+
+Do not call `asyncio.run()` from inside a coroutine or from an exposed method that is
+already being served by the running loop - it raises `RuntimeError`.
 
 ---
 
@@ -504,17 +526,17 @@ async def async_method(self):
 
 **Wrong:**
 ```python
-async def process_many():
+async def process_many(items):
     for item in items:
-        conn = rpyc.connect("localhost", 18861)  # Creates 1000 connections!
+        conn = await async_connect("localhost", 18861)  # Creates 1000 connections!
         await conn.root.process(item)
         conn.close()
 ```
 
 **Correct:**
 ```python
-async def process_many():
-    conn = rpyc.connect("localhost", 18861)  # Reuse connection
+async def process_many(items):
+    conn = await async_connect("localhost", 18861)  # Reuse connection
     try:
         for item in items:
             await conn.root.process(item)
@@ -528,7 +550,7 @@ async def process_many():
 
 ### Issue: "RuntimeError: no running event loop"
 
-**Cause:** Calling async code outside async context
+**Cause:** Calling async code outside an async context
 
 **Solution:**
 ```python
@@ -537,6 +559,7 @@ result = await conn.root.async_method()
 
 # Correct
 async def main():
+    conn = await async_connect("localhost", 18861)
     result = await conn.root.async_method()
 
 asyncio.run(main())
@@ -546,24 +569,26 @@ asyncio.run(main())
 
 ### Issue: AsyncResult never completes
 
-**Cause:** Connection not processing incoming messages
+**Cause:** The connection is not serving incoming messages on the event loop.
 
-**Solution:** AsyncResult automatically handles this in v5.1 via background polling
+**Solution:** Connect with `async_connect()` and serve the peer with `AsyncioServer`, so
+inbound messages are dispatched by the running loop. For a connection created outside
+`async_connect()`, call `conn.enable_asyncio_serving()` before awaiting results.
 
 ---
 
 ### Issue: Performance worse after migration
 
-**Cause:** Not using concurrent operations
+**Cause:** Awaiting each call in a loop instead of running them concurrently.
 
 **Solution:**
 ```python
-# Before (fast with asyncio.gather)
+# Fast (concurrent)
 results = await asyncio.gather(*[
     conn.root.process(item) for item in items
 ])
 
-# Wrong (slow - sequential)
+# Slow (sequential)
 results = []
 for item in items:
     result = await conn.root.process(item)
@@ -572,30 +597,19 @@ for item in items:
 
 ---
 
-## Rollback Plan
+## Switching Back
 
-If you need to rollback to v5.0:
+`rpyc-async` is a distinct distribution, so there is no in-place downgrade path. To return
+to classic synchronous RPyC, uninstall `rpyc-async` and install upstream RPyC:
 
-1. **Keep old sync methods** during migration
-2. **Test thoroughly** before removing sync methods
-3. **Use version detection** in clients:
-
-```python
-def is_async_supported(conn):
-    """Check if server supports async."""
-    try:
-        # Try to get protocol version
-        version = conn._config.get('protocol_version', (5, 0))
-        return version >= (5, 1)
-    except:
-        return False
-
-# Client usage
-if is_async_supported(conn):
-    result = await conn.root.async_method()
-else:
-    result = conn.root.sync_method()
+```bash
+pip uninstall rpyc-async
+pip install rpyc
 ```
+
+Because both distributions expose the same `rpyc` import name, install only one of them per
+environment. To ease the transition, keep the synchronous method variants until every call
+site has been migrated, and test both paths in isolated environments before removing them.
 
 ---
 
@@ -603,12 +617,6 @@ else:
 
 - [API Reference](API_REFERENCE.md)
 - [Examples](EXAMPLES.md)
+- [AsyncioServer Migration](ASYNCIO_SERVER_MIGRATION.md)
 - [Implementation Design](./IMPLEMENTATION_DESIGN.md)
-
----
-
-## Getting Help
-
-- GitHub Issues: https://github.com/tomerfiliba-org/rpyc/issues
-- Documentation: https://rpyc.readthedocs.io/
-- Community: RPyC mailing list
+- [Limitations](LIMITATIONS.md)

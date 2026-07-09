@@ -1,12 +1,14 @@
 # RPyC Async/Await Documentation
 
-**RPyC 5.1** adds native async/await support to RPyC, enabling efficient asynchronous remote procedure calls.
+**rpyc-async 1.0.0** is an asyncio-native fork of RPyC, providing native
+async/await support for reliable and efficient asynchronous remote procedure
+calls. It is versioned independently of upstream RPyC (forked from RPyC 6.0.1).
 
 ## Quick Links
 
 - **[API Reference](API_REFERENCE.md)** - Complete API documentation
 - **[Examples](EXAMPLES.md)** - Practical code examples
-- **[Migration Guide](MIGRATION_GUIDE.md)** - Upgrade from v5.0 to v5.1
+- **[Migration Guide](MIGRATION_GUIDE.md)** - Moving to the asyncio-native API
 
 ### Design & Proposals
 
@@ -28,8 +30,8 @@
 ### Installation
 
 ```bash
-# Install RPyC 5.1
-pip install rpyc>=5.1
+# Install rpyc-async
+pip install rpyc-async
 ```
 
 ### Simple Example
@@ -106,18 +108,16 @@ results = await asyncio.gather(
 )
 ```
 
-### ✅ Backward Compatible
+### ⚠️ Not a drop-in replacement for synchronous RPyC
 
-All RPyC 5.0 code works unchanged:
+rpyc-async targets the asyncio-native `AsyncioServer` and the async client
+(`async_connect`). Backward compatibility with the classic synchronous RPyC
+API is **not guaranteed** — code written against upstream sync RPyC may need
+changes. See the [Migration Guide](MIGRATION_GUIDE.md).
 
-```python
-# Sync methods still work
-result = conn.root.sync_method()
-```
+### Mixed Sync/Async services
 
-### ✅ Mixed Sync/Async
-
-Combine sync and async methods in same service:
+A service may still expose both sync and async methods:
 
 ```python
 class MixedService(rpyc.Service):
@@ -196,10 +196,10 @@ async def exposed_process_batch(self, items):
 
 **100 concurrent I/O-bound calls:**
 
-| Version | Execution Time | Throughput |
+| Mode | Execution Time | Throughput |
 |---------|---------------|------------|
-| RPyC 5.0 (sync) | ~100s | 1 req/s |
-| RPyC 5.1 (async) | ~1s | 100 req/s |
+| Classic sync RPyC | ~100s | 1 req/s |
+| rpyc-async (async) | ~1s | 100 req/s |
 
 **Result:** 100x improvement for I/O-bound workloads!
 
@@ -209,7 +209,7 @@ async def exposed_process_batch(self, items):
 
 ### Protocol Changes
 
-**New Message Types (v5.1):**
+**New Message Types:**
 - `MSG_ASYNC_REQUEST` - Async RPC request
 - `MSG_ASYNC_REPLY` - Async RPC reply
 - `MSG_ASYNC_EXCEPTION` - Async RPC exception
@@ -230,8 +230,7 @@ async def exposed_process_batch(self, items):
 
 ## Requirements
 
-- **Python:** 3.7+ (for native async/await)
-- **RPyC:** 5.1+
+- **Python:** 3.10+
 - **Optional:** aiohttp, asyncpg, aiofiles (for async I/O)
 
 ---
@@ -240,22 +239,10 @@ async def exposed_process_batch(self, items):
 
 ### Python Versions
 
-| Python Version | Async/Await | Supported |
-|---------------|-------------|-----------|
-| 3.11+         | ✅ Yes      | ✅ Yes    |
-| 3.10          | ✅ Yes      | ✅ Yes    |
-| 3.9           | ✅ Yes      | ✅ Yes    |
-| 3.8           | ✅ Yes      | ✅ Yes    |
-| 3.7           | ✅ Yes      | ✅ Yes    |
-| 3.6 and below | ❌ No       | ❌ No     |
-
-### RPyC Versions
-
-| Client | Server | Async Support |
-|--------|--------|---------------|
-| 5.1    | 5.1    | ✅ Full       |
-| 5.1    | 5.0    | ⚠️ Sync only  |
-| 5.0    | 5.1    | ⚠️ Sync only  |
+| Python Version | Supported |
+|---------------|-----------|
+| 3.10+         | ✅ Yes    |
+| 3.9 and below | ❌ No     |
 
 ---
 

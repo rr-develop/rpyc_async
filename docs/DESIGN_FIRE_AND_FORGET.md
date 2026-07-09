@@ -1,6 +1,7 @@
-# Design Document: fire_and_forget() Utilities for rpyc_async
+# Design Document: fire_and_forget() Utilities for rpyc-async
 
-**Version:** 1.1
+**Document Version:** 1.1
+**Target:** `rpyc-async` 1.0.0 (distribution `rpyc-async`, import name `rpyc`)
 **Date:** 2026-04-06
 **Status:** Implementation Phase
 
@@ -835,7 +836,7 @@ def fire_and_forget(...):
 **Mitigation:**
 - Return task from `fire_and_forget()` so user can hold reference
 - Document best practice of keeping task references
-- Optionally: Provide global task set (like in fire_and_forget.txt example)
+- Optionally: Provide global task set (as in the reference fire-and-forget pattern)
 
 ```python
 # Optional enhancement
@@ -922,16 +923,15 @@ def _check_asyncio_enabled(awaitable):
 
 ### 11.1 Python Versions
 
-- Requires Python 3.10+ (due to `float | None` syntax)
-- Or Python 3.8+ with `from __future__ import annotations`
+- Requires Python 3.10+ (minimum supported version; `float | None` syntax is used directly)
 
-**Recommendation:** Use `from __future__ import annotations` for wider compatibility.
+**Recommendation:** `from __future__ import annotations` may still be used for consistency, but it is not required on 3.10+.
 
-### 11.2 rpyc Versions
+### 11.2 rpyc-async Versions
 
-- Requires rpyc_async with async support (v5.1+)
+- Requires `rpyc-async` 1.0.0+ (asyncio-native; import name remains `rpyc`)
 - Uses existing `AsyncResult`, `enable_asyncio_serving()`, etc.
-- No breaking changes to existing API
+- Compatibility with classic synchronous RPyC (upstream RPyC) is not guaranteed
 
 ### 11.3 Asyncio Backend
 
@@ -1082,6 +1082,10 @@ Implementation can proceed with confidence that this design addresses all requir
 ## 16. References
 
 1. Python asyncio documentation: https://docs.python.org/3/library/asyncio-task.html
-2. protocol.py: `rpyc/core/protocol.py`
-3. AsyncioServer: `rpyc/utils/async_server.py`
-4. Fire-and-forget pattern reference (internal note, not included here)
+2. Protocol implementation: `rpyc/core/protocol.py`
+3. AsyncioServer implementation: `rpyc/utils/async_server.py`
+4. Fire-and-forget pattern reference notes (internal design notes)
+
+---
+
+**Document Path:** `docs/DESIGN_FIRE_AND_FORGET.md`

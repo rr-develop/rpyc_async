@@ -1,8 +1,15 @@
-# RPyC Async/Await API Reference
+# rpyc-async API Reference
 
 ## Overview
 
-RPyC 5.1 introduces native async/await support, allowing you to write asynchronous remote procedures that can be awaited just like local async functions.
+`rpyc-async` is an asyncio-native fork of RPyC. It provides native async/await support, allowing you to write asynchronous remote procedures that can be awaited just like local async functions.
+
+**Version:** 1.0.0
+**Install:** `pip install rpyc-async`
+**Import name:** `import rpyc`
+**Requires:** Python 3.10+
+
+> `rpyc-async` does not guarantee wire or API compatibility with classic synchronous RPyC.
 
 ## Table of Contents
 
@@ -115,7 +122,7 @@ Get the result value (blocking).
 
 **Example:**
 ```python
-# Blocking usage (traditional RPyC style)
+# Blocking usage (classic synchronous RPyC style)
 result = conn.root.async_method()
 value = result.value  # Blocks until result arrives
 ```
@@ -201,7 +208,7 @@ class MyService(rpyc.Service):
         return f"Hello, {name}!"
 
     def exposed_sync_hello(self, name):
-        """Traditional sync service method."""
+        """Plain sync service method."""
         return f"Sync hello, {name}!"
 ```
 
@@ -248,12 +255,12 @@ async def main():
 
 ### Message Types
 
-**Async Messages (v5.1):**
+**Async Messages:**
 - `MSG_ASYNC_REQUEST = 10` - Async request
 - `MSG_ASYNC_REPLY = 11` - Async reply
 - `MSG_ASYNC_EXCEPTION = 12` - Async exception
 
-**Traditional Messages:**
+**Sync Messages:**
 - `MSG_REQUEST = 0` - Sync request
 - `MSG_REPLY = 1` - Sync reply
 - `MSG_EXCEPTION = 2` - Sync exception
@@ -262,11 +269,11 @@ async def main():
 
 ### Handler Constants
 
-**Async Handlers (v5.1):**
+**Async Handlers:**
 - `HANDLE_ASYNC_CALL = 100` - Call async function
 - `HANDLE_ASYNC_CALLATTR = 101` - Call async method attribute
 
-**Traditional Handlers:**
+**Sync Handlers:**
 - `HANDLE_CALL = 5` - Call sync function
 - `HANDLE_CALLATTR = 6` - Call sync method attribute
 
@@ -274,7 +281,7 @@ async def main():
 
 ### Object Flags
 
-**Async Flags (v5.1):**
+**Async Flags:**
 - `FLAGS_SYNC = 0x00` - Sync object (default)
 - `FLAGS_ASYNC = 0x01` - Async object
 
@@ -366,26 +373,22 @@ except Exception as e:
 
 ---
 
-## Backward Compatibility
+## Compatibility
 
-### Protocol Version
-
-- **v5.1**: Adds async/await support
-- **v5.0**: Traditional sync-only RPyC
+`rpyc-async` is an independent, asyncio-native fork with its own versioning starting at 1.0.0.
+Interoperability with classic synchronous RPyC is **not** guaranteed — neither at the wire
+protocol level nor at the API level. Both peers must run `rpyc-async`.
 
 ### Compatibility Matrix
 
-| Client | Server | Async Support | Sync Support |
-|--------|--------|---------------|--------------|
-| v5.1   | v5.1   | ✅ Yes        | ✅ Yes       |
-| v5.1   | v5.0   | ❌ No         | ✅ Yes       |
-| v5.0   | v5.1   | ❌ No         | ✅ Yes       |
-| v5.0   | v5.0   | ❌ No         | ✅ Yes       |
+| Client     | Server     | Async Support | Sync Support |
+|------------|------------|---------------|--------------|
+| rpyc-async | rpyc-async | ✅ Yes        | ✅ Yes       |
 
 **Notes:**
-- v5.1 clients can call sync methods on v5.0 servers
-- v5.0 clients can call sync methods on v5.1 servers
-- Async methods only work when both client and server are v5.1
+- Async methods require `rpyc-async` on both client and server
+- Within `rpyc-async`, a service may expose sync and async methods side by side
+- Connecting to or from a classic synchronous RPyC peer is unsupported
 
 ---
 
