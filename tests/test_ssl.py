@@ -12,7 +12,38 @@ except ImportError:
     _ssl_import_failed = True
 
 
+def _server_cert_valid():
+    """True if the bundled server test certificate is currently valid.
+
+    These tests authenticate against tests/server.crt. That self-signed
+    fixture has a fixed validity window, so once it expires every TLS
+    handshake fails with 'certificate expired' before any tested logic runs.
+    Skip (rather than fail) when the cert is missing/expired/not-yet-valid;
+    regenerate the fixtures to re-enable the tests.
+    """
+    if _ssl_import_failed:
+        return False
+    cert = os.path.join(os.path.dirname(__file__), "server.crt")
+    try:
+        not_after = ssl.cert_time_to_seconds(
+            ssl._ssl._test_decode_cert(cert)["notAfter"]
+        )
+        not_before = ssl.cert_time_to_seconds(
+            ssl._ssl._test_decode_cert(cert)["notBefore"]
+        )
+    except Exception:
+        return False
+    import time
+    now = time.time()
+    return not_before <= now <= not_after
+
+
+_certs_valid = _server_cert_valid()
+_certs_skip_reason = "SSL test certificates are missing or expired"
+
+
 @unittest.skipIf(_ssl_import_failed, "Ssl not available")
+@unittest.skipUnless(_certs_valid, _certs_skip_reason)
 class Test_SSL(unittest.TestCase):
     '''Created keys/certs like https://gist.github.com/soarez/9688998
     # Server key
@@ -77,6 +108,7 @@ class Test_SSL(unittest.TestCase):
 
 
 @unittest.skipIf(_ssl_import_failed, "Ssl not available")
+@unittest.skipUnless(_certs_valid, _certs_skip_reason)
 class Test_SSL_CERT_REQUIRED(unittest.TestCase):
     '''It may be nonobvious and easy to misconfigure, but not specify'''
     def setUp(self):
@@ -103,6 +135,7 @@ class Test_SSL_CERT_REQUIRED(unittest.TestCase):
 
 
 @unittest.skipIf(_ssl_import_failed, "Ssl not available")
+@unittest.skipUnless(_certs_valid, _certs_skip_reason)
 class Test_SSL_CERT_NONE(unittest.TestCase):
     '''It may be nonobvious and easy to misconfigure, but not specify'''
     def setUp(self):
