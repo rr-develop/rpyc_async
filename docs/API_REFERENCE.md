@@ -18,19 +18,28 @@
 - [Service Methods](#service-methods)
 - [Protocol Constants](#protocol-constants)
 - [Type Hints](#type-hints)
+- [Error Handling](#error-handling)
+- [Performance Considerations](#performance-considerations)
+- [Compatibility](#compatibility)
 
 ---
 
 ## Connection Methods
 
-### `enable_asyncio_serving(loop=None)`
+### `await async_connect(host, port, *, service=VoidService, config=None, timeout=None, loop=None)`
 
-Enable asyncio-based serving for the connection.
+Establish a connection from async code. **This is the entry point for `rpyc-async`.**
 
 **Parameters:**
-- `loop` (asyncio.AbstractEventLoop, optional): Event loop to use. If None, uses `asyncio.get_running_loop()`.
+- `host` (str), `port` (int): where to connect
+- `service` (Service, optional): the *client-side* service exposed to the server
+  (needed for server→client callbacks). Defaults to `VoidService`.
+- `config` (dict, optional): RPyC protocol config
+- `timeout` (float, optional): connect timeout in seconds. Wraps only the TCP
+  handshake, not the whole call.
+- `loop` (asyncio.AbstractEventLoop, optional): defaults to `asyncio.get_running_loop()`
 
-**Returns:** None
+**Returns:** `Connection`
 
 **Example:**
 ```python
@@ -38,22 +47,64 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
-    conn.enable_asyncio_serving()
-
-    # Now connection can handle incoming async requests
-    result = await conn.root.async_method()
-
-    conn.disable_asyncio_serving()
-    conn.close()
+    conn = await rpyc.async_connect("localhost", 18861, timeout=5.0)
+    try:
+        result = await conn.root.async_method()
+    finally:
+        await conn.aclose()
 
 asyncio.run(main())
 ```
 
 **Notes:**
-- Only needed when server calls back to client with async methods
-- Registers file descriptor with event loop using `loop.add_reader()`
-- Automatically processes incoming messages without blocking
+- Performs a non-blocking TCP connect and an **eager handshake**, so the first
+  access to `conn.root` never blocks the event loop.
+- **Enables asyncio serving automatically.** You do *not* need to call
+  `enable_asyncio_serving()` yourself.
+
+> **Do not call `rpyc.connect()` from async code.** It is synchronous and would
+> block the running event loop, so it raises `RuntimeError` and points you here.
+
+---
+
+### `await conn.aclose()`
+
+Close the connection from async code.
+
+**Parameters:** None &nbsp;&nbsp; **Returns:** None
+
+**Example:**
+```python
+try:
+    result = await conn.root.async_method()
+finally:
+    await conn.aclose()
+```
+
+**Notes:**
+- **Use this, not `conn.close()`, in async code.** `close()` issues a blocking
+  `sync_request(HANDLE_CLOSE)`; on a connection that serves the running loop
+  that request is rejected by a guard and raises `RuntimeError`.
+- Drains pending netref deletions, sends `HANDLE_CLOSE` event-driven, then
+  cleans up locally. Never blocks the loop. Safe to call more than once.
+
+---
+
+### `enable_asyncio_serving(loop=None)`
+
+Enable asyncio-based serving on an existing connection.
+
+**Parameters:**
+- `loop` (asyncio.AbstractEventLoop, optional): Event loop to use. If None, uses `asyncio.get_running_loop()`.
+
+**Returns:** None
+
+**Notes:**
+- **You rarely need this.** `async_connect()` already enables serving, and
+  `AsyncioServer` enables it on every accepted connection.
+- It exists for connections built by hand from a channel/stream.
+- Registers the socket with the event loop via `loop.add_reader()` and processes
+  incoming messages without blocking.
 
 ---
 
@@ -65,15 +116,10 @@ Disable asyncio-based serving for the connection.
 
 **Returns:** None
 
-**Example:**
-```python
-conn.disable_asyncio_serving()
-```
-
 **Notes:**
-- Removes file descriptor from event loop
-- Cleans up asyncio resources
-- Safe to call multiple times
+- Removes the file descriptor from the event loop and cleans up asyncio state.
+- Safe to call multiple times. Not needed before `aclose()`, which cleans up
+  on its own.
 
 ---
 
@@ -92,7 +138,7 @@ Make AsyncResult awaitable in async context.
 **Example:**
 ```python
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     # Call async method - returns AsyncResult
     async_result = conn.root.async_method()
@@ -225,29 +271,58 @@ class MyService(rpyc.Service):
 **Calling Async Methods:**
 ```python
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
+    try:
+        # Native async method - just await it
+        result = await conn.root.async_hello("world")
+        print(result)  # "Hello, world!"
 
-    # Call async method - returns AsyncResult
-    result = await conn.root.async_hello("world")
-    print(result)  # "Hello, world!"
-
-    # Call sync method - returns value directly
-    result = conn.root.sync_hello("world")
-    print(result)  # "Sync hello, world!"
+        # Sync remote method: wrap it, otherwise the blocking call is
+        # rejected by the sync_request guard on the serving loop.
+        a_sync_hello = rpyc.async_(conn.root.sync_hello)
+        print(await a_sync_hello("world"))  # "Sync hello, world!"
+    finally:
+        await conn.aclose()
 ```
+
+> Store the wrapper returned by `rpyc.async_()` in a variable rather than
+> calling it inline: the wrapper is cached behind a weak reference.
 
 **Concurrent Async Calls:**
 ```python
 async def main():
-    conn = rpyc.connect("localhost", 18861)
-
-    # Launch multiple async calls concurrently
-    results = await asyncio.gather(
-        conn.root.async_method1(),
-        conn.root.async_method2(),
-        conn.root.async_method3(),
-    )
+    conn = await rpyc.async_connect("localhost", 18861)
+    try:
+        # Launch multiple async calls concurrently
+        results = await asyncio.gather(
+            conn.root.async_method1(),
+            conn.root.async_method2(),
+            conn.root.async_method3(),
+        )
+    finally:
+        await conn.aclose()
 ```
+
+**Fire-and-forget:** to start a remote async call and not wait for it, use
+`fire_and_forget()` (sync callbacks) or `fire_and_forget_async()` (async
+callbacks). Both return an `asyncio.Task`; keep a reference to it.
+
+```python
+from rpyc.utils.helpers import fire_and_forget_async
+
+async def on_success(result):
+    await log(result)
+
+task = fire_and_forget_async(
+    conn.root.long_running_task(),
+    timeout=30.0,
+    success_callback=on_success,
+    error_callback=log_error,
+)
+```
+
+Both require a running event loop and an `AsyncioServer` peer. They are
+imported from `rpyc.utils.helpers`, not from the `rpyc` top level.
 
 ---
 
@@ -321,7 +396,7 @@ Exceptions in async methods are propagated to caller:
 
 ```python
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         result = await conn.root.async_method_that_fails()
@@ -363,13 +438,13 @@ except Exception as e:
 
 **Async overhead:**
 - ~1-2ms per async call (event loop scheduling)
-- Temporary event loop creation if not using `enable_asyncio_serving()`
-- Background polling task for awaiting results
+- No polling: replies are delivered by `loop.add_reader()` on the connection's
+  socket, so awaiting a result costs nothing while it is pending
 
 **Optimization tips:**
 - Reuse connections instead of creating new ones
-- Use `enable_asyncio_serving()` for better performance
 - Batch multiple calls with `asyncio.gather()`
+- Use `fire_and_forget()` when you do not need the result
 
 ---
 

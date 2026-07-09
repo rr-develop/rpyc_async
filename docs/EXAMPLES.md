@@ -16,11 +16,23 @@ This document provides practical examples of using async/await with RPyC.
 
 ### Simple Async Server
 
+> **Read this first.** Every example below uses `AsyncioServer` and
+> `await rpyc.async_connect(...)`.
+>
+> - `ThreadedServer` **cannot** run `async def exposed_*` methods: without a
+>   persistent event loop the call raises `RuntimeError`. Use it only for
+>   purely synchronous services.
+> - `rpyc.connect()` raises `RuntimeError` when called from a running event
+>   loop, because it would block it. Use `await rpyc.async_connect(...)`.
+> - Close with `await conn.aclose()`, never `conn.close()` — the latter issues a
+>   blocking request that the serving loop rejects.
+> - The server must run in a **separate OS process** from the client.
+
 ```python
 # server.py
 import asyncio
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 
 class AsyncCalculator(rpyc.Service):
     async def exposed_async_add(self, a, b):
@@ -33,15 +45,17 @@ class AsyncCalculator(rpyc.Service):
         await asyncio.sleep(0.1)
         return a * b
 
-if __name__ == "__main__":
-    server = ThreadedServer(
-        AsyncCalculator,
-        port=18861,
-        protocol_config={'allow_all_attrs': True}
-    )
+async def main():
+    server = AsyncioServer(AsyncCalculator, hostname="localhost", port=18861)
     print("Server started on port 18861")
-    server.start()
+    await server.serve_forever()
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
+
+`rpyc.run_async_server(AsyncCalculator, port=18861)` is a one-line shorthand for
+the `main()` above.
 
 ### Simple Async Client
 
@@ -51,8 +65,8 @@ import asyncio
 import rpyc
 
 async def main():
-    # Connect to server
-    conn = rpyc.connect("localhost", 18861)
+    # Connect to server (non-blocking; enables asyncio serving for you)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Call async methods and await results
@@ -62,7 +76,7 @@ async def main():
         result2 = await conn.root.async_multiply(4, 7)
         print(f"4 * 7 = {result2}")  # 28
     finally:
-        conn.close()
+        await conn.aclose()
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -78,12 +92,12 @@ if __name__ == "__main__":
 import asyncio
 import time
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 
 class MixedService(rpyc.Service):
     """Service with both sync and async methods."""
 
-    # Traditional sync method
+    # Plain sync method
     def exposed_sync_hello(self, name):
         return f"Sync hello, {name}!"
 
@@ -107,8 +121,7 @@ class MixedService(rpyc.Service):
                 return await response.text()
 
 if __name__ == "__main__":
-    server = ThreadedServer(MixedService, port=18861)
-    server.start()
+    rpyc.run_async_server(MixedService, port=18861)
 ```
 
 ---
@@ -122,7 +135,7 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Launch multiple async calls concurrently
@@ -137,7 +150,7 @@ async def main():
         print(f"Results: {results}")
         # Results: [3, 7, 11, 6, 20]
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -149,7 +162,7 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Call method that may raise exception
@@ -159,7 +172,7 @@ async def main():
     except Exception as e:
         print(f"Remote raised exception: {e}")
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -171,7 +184,7 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Set timeout using asyncio.wait_for
@@ -183,7 +196,7 @@ async def main():
     except asyncio.TimeoutError:
         print("Request timed out!")
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -207,12 +220,12 @@ class AsyncRPyCConnection:
         self.conn = None
 
     async def __aenter__(self):
-        self.conn = rpyc.connect(self.host, self.port)
+        self.conn = await rpyc.async_connect(self.host, self.port)
         return self.conn
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.conn:
-            self.conn.close()
+            await self.conn.aclose()
         return False
 
 # Usage
@@ -248,7 +261,7 @@ class AsyncRPyCPool:
         if self.connections:
             return self.connections.pop()
         else:
-            return rpyc.connect(self.host, self.port)
+            return await rpyc.async_connect(self.host, self.port)
 
     async def release_connection(self, conn):
         """Return connection to pool."""
@@ -295,7 +308,7 @@ class StreamingService(rpyc.Service):
 
 # Client
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Get all results at once
@@ -303,7 +316,7 @@ async def main():
         for num in results:
             print(f"Received: {num}")
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -318,7 +331,7 @@ asyncio.run(main())
 # server.py
 import asyncio
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 import asyncpg  # PostgreSQL async driver
 
 class AsyncDatabaseService(rpyc.Service):
@@ -352,8 +365,7 @@ class AsyncDatabaseService(rpyc.Service):
             return result
 
 if __name__ == "__main__":
-    server = ThreadedServer(AsyncDatabaseService, port=18861)
-    server.start()
+    rpyc.run_async_server(AsyncDatabaseService, port=18861)
 ```
 
 ```python
@@ -362,7 +374,7 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Initialize database
@@ -384,7 +396,7 @@ async def main():
         )
         print(f"Executed: {result}")
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -395,7 +407,7 @@ asyncio.run(main())
 # server.py
 import asyncio
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 import aiohttp
 from bs4 import BeautifulSoup
 
@@ -449,8 +461,7 @@ class AsyncScraperService(rpyc.Service):
         return titles
 
 if __name__ == "__main__":
-    server = ThreadedServer(AsyncScraperService, port=18861)
-    server.start()
+    rpyc.run_async_server(AsyncScraperService, port=18861)
 ```
 
 ```python
@@ -459,7 +470,7 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Scrape titles from multiple URLs
@@ -477,7 +488,7 @@ async def main():
             else:
                 print(f"{item['url']}: {item['title']}")
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```
@@ -488,7 +499,7 @@ asyncio.run(main())
 # server.py
 import asyncio
 import rpyc
-from rpyc.utils.server import ThreadedServer
+from rpyc.utils.async_server import AsyncioServer
 from typing import Dict, Any
 import uuid
 
@@ -534,8 +545,7 @@ class AsyncTaskQueue(rpyc.Service):
         return self.results[task_id]
 
 if __name__ == "__main__":
-    server = ThreadedServer(AsyncTaskQueue, port=18861)
-    server.start()
+    rpyc.run_async_server(AsyncTaskQueue, port=18861)
 ```
 
 ```python
@@ -544,7 +554,7 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Submit task
@@ -566,7 +576,7 @@ async def main():
         result = await conn.root.wait_for_task(task_id)
         print(f"Final result: {result}")
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```

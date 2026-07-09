@@ -41,7 +41,6 @@ pip install rpyc-async
 # server.py
 import asyncio
 import rpyc
-from rpyc.utils.server import ThreadedServer
 
 class MyService(rpyc.Service):
     async def exposed_async_hello(self, name):
@@ -49,9 +48,8 @@ class MyService(rpyc.Service):
         return f"Hello, {name}!"
 
 if __name__ == "__main__":
-    server = ThreadedServer(MyService, port=18861)
     print("Server started on port 18861")
-    server.start()
+    rpyc.run_async_server(MyService, port=18861)
 ```
 
 **Client:**
@@ -61,18 +59,23 @@ import asyncio
 import rpyc
 
 async def main():
-    conn = rpyc.connect("localhost", 18861)
+    conn = await rpyc.async_connect("localhost", 18861)
 
     try:
         # Call async method and await result
         result = await conn.root.async_hello("World")
         print(result)  # "Hello, World!"
     finally:
-        conn.close()
+        await conn.aclose()
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+> `ThreadedServer` cannot run `async def exposed_*` methods, and `rpyc.connect()`
+> raises `RuntimeError` inside a running event loop. Use `AsyncioServer` /
+> `run_async_server()` and `await rpyc.async_connect(...)`, and close the
+> connection with `await conn.aclose()`.
 
 Run:
 ```bash

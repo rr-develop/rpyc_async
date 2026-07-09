@@ -335,13 +335,18 @@ async def main():
     try:
         result = await conn.root.method()
     finally:
-        conn.close()
+        await conn.aclose()
 
 asyncio.run(main())
 ```
 
 `async_connect()` performs a non-blocking TCP connect and an eager handshake, so the first
-access to `conn.root` never blocks the event loop.
+access to `conn.root` never blocks the event loop. It also enables asyncio serving for you,
+so there is no need to call `enable_asyncio_serving()` yourself.
+
+Close with `await conn.aclose()`, **not** `conn.close()`. The synchronous `close()` issues a
+blocking `sync_request(HANDLE_CLOSE)`; on a connection that serves the running loop that
+request is rejected by a guard and raises `RuntimeError`.
 
 ---
 
@@ -414,8 +419,11 @@ class TestMyService(unittest.IsolatedAsyncioTestCase):
             result = await conn.root.method()
             self.assertEqual(result, "expected")
         finally:
-            conn.close()
+            await conn.aclose()
 ```
+
+The server must run in a **separate OS process**. A client and an `AsyncioServer` in the
+same process is not a supported topology.
 
 `unittest.IsolatedAsyncioTestCase` is the recommended base class; it is available on every
 supported Python version (3.10+).
@@ -541,7 +549,7 @@ async def process_many(items):
     for item in items:
         conn = await async_connect("localhost", 18861)  # Creates 1000 connections!
         await conn.root.process(item)
-        conn.close()
+        await conn.aclose()
 ```
 
 **Correct:**
@@ -552,7 +560,7 @@ async def process_many(items):
         for item in items:
             await conn.root.process(item)
     finally:
-        conn.close()
+        await conn.aclose()
 ```
 
 ---

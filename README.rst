@@ -112,9 +112,11 @@ Quick Examples
             # Native async method — just await.
             result = await conn.root.some_async_method(42)
             # Sync remote method? Wrap with rpyc.async_() to stay event-driven.
-            sync_result = await rpyc.async_(conn.root.some_sync_method)(42)
+            # Keep the wrapper in a variable: it is cached behind a weak ref.
+            a_sync = rpyc.async_(conn.root.some_sync_method)
+            sync_result = await a_sync(42)
         finally:
-            await conn.aclose()
+            await conn.aclose()   # not conn.close() — that blocks the loop
 
     asyncio.run(main())
 
