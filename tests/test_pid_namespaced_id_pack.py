@@ -35,9 +35,9 @@ import resource
 import time
 
 import pytest
-import rpyc
-from rpyc.core.async_connect import async_connect
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.core.async_connect import async_connect
+from rpyc_async.utils.async_server import AsyncioServer
 
 from tests.support import get_free_port, mp_asyncio_server
 
@@ -50,10 +50,10 @@ from tests.support import get_free_port, mp_asyncio_server
 def test_id_pack_seq_starts_with_pid_shifted_by_32() -> None:
     """The first seq a fresh ``Connection`` hands out must be
     ``(os.getpid() << 32) + 1``."""
-    from rpyc.core.channel import Channel
-    from rpyc.core.protocol import Connection
-    from rpyc.core.service import VoidService
-    from rpyc.core.stream import PipeStream
+    from rpyc_async.core.channel import Channel
+    from rpyc_async.core.protocol import Connection
+    from rpyc_async.core.service import VoidService
+    from rpyc_async.core.stream import PipeStream
 
     # Minimal channel pair for a Connection that doesn't actually
     # touch the wire. ``PipeStream.from_std`` gives us a channel that
@@ -180,9 +180,9 @@ class _CallbackServer(rpyc.Service):
     """Server that, when a client subscribes, will call
     ``callback.on_message(payload)`` N times and then return.
 
-    This reproduces the exact pattern that was leaking in a
-    downstream application: a registered ``MessageCallbackService``
-    invoked by a peer in a tight loop. Also exposes its own PID
+    This reproduces the exact pattern that was leaking in
+    a downstream application: a web-registered ``MessageCallbackService``
+    invoked by an agent in a tight loop. Also exposes its own PID
     and RSS so the test can measure BOTH sides — the leak manifested
     on both the server and client processes simultaneously.
 
@@ -233,7 +233,7 @@ def _rss_kb() -> int:
 
 @pytest.mark.asyncio
 async def test_cross_process_callback_does_not_leak() -> None:
-    """Regression for the downstream 10 GB leak. Register a
+    """Regression for a downstream application's 10 GB leak. Register a
     callback, run 200 round-trips, assert the client-side RSS did
     not explode.
 
@@ -342,11 +342,11 @@ def test_unbox_shortcut_rejects_foreign_pid_under_debug() -> None:
     violation (or a bug in the allocator) and should fail loudly
     instead of silently returning the wrong object.
     """
-    from rpyc.core import consts
-    from rpyc.core.channel import Channel
-    from rpyc.core.protocol import Connection
-    from rpyc.core.service import VoidService
-    from rpyc.core.stream import PipeStream
+    from rpyc_async.core import consts
+    from rpyc_async.core.channel import Channel
+    from rpyc_async.core.protocol import Connection
+    from rpyc_async.core.service import VoidService
+    from rpyc_async.core.stream import PipeStream
 
     rfd, wfd = os.pipe()
     r2, w2 = os.pipe()

@@ -1,8 +1,8 @@
 import os
-import rpyc
+import rpyc_async as rpyc
 import tempfile
-from rpyc.utils.server import ThreadedServer, ThreadPoolServer
-from rpyc import SlaveService
+from rpyc_async.utils.server import ThreadedServer, ThreadPoolServer
+from rpyc_async import SlaveService
 import unittest
 
 

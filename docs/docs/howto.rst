@@ -109,7 +109,7 @@ run an RPyC server on machine ``C``, to which machine ``A`` would connect, and u
 ``socket`` module to connect to machine ``B``. It's really simple::
 
     # this runs on machine `A`
-    import rpyc
+    import rpyc_async as rpyc
 
     machine_c = rpyc.classic.connect("machine-c")
     sock = machine_c.modules.socket.socket()
@@ -125,7 +125,7 @@ or ``asyncore``), and you want them to be able to cross networks over such a bri
 you can use the recipe above to "inject" ``C``'s socket module into your third-party module,
 like so::
 
-    import rpyc
+    import rpyc_async as rpyc
     import telnetlib
 
     machine_c = rpyc.classic.connect("machine-c")
@@ -136,7 +136,7 @@ handy technique which you can use in other places as well, to override functions
 and entire modules. For instance ::
 
     import mymodule
-    import rpyc
+    import rpyc_async as rpyc
     # ...
     mymodule.os = conn.modules.os
     mymodule.open = conn.builtins.open

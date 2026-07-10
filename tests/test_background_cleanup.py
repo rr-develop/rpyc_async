@@ -7,8 +7,8 @@ netref deletions in batches.
 import unittest
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class TestBackgroundCleanupTask(unittest.TestCase):

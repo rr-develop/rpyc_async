@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import functools
-import rpyc
+import rpyc_async as rpyc
 import threading
 import random
 import time

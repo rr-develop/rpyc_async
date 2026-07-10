@@ -1,10 +1,10 @@
 from __future__ import with_statement
-import rpyc
+import rpyc_async as rpyc
 import unittest
 
 
 # A version whose *major* differs from ours, so that vinegar appends the
-# mismatch warning. Must not be derived from rpyc.version, or the test would
+# mismatch warning. Must not be derived from rpyc_async.version, or the test would
 # silently stop exercising the warning whenever our own major changes.
 MISMATCHED_VERSION = '0.0.0'
 

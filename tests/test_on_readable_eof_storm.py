@@ -3,12 +3,12 @@ closes, and must take its reader OFF the loop on EOF.
 
 Two historical incidents this guards (both observed in a downstream application):
 
-  * ~1.7 GB of ``EOFError: stream has been closed`` written in
+  * 2026-05-23 — ~1.7 GB of ``EOFError: stream has been closed`` written in
     minutes. The OLD poll-based reader let an EOFError from the ``while
     self._channel.poll(0)`` CONDITION escape the callback; ``close()`` was
     never reached, the reader stayed armed, asyncio re-fired it instantly →
     a tight log-spamming livelock.
-  * 99.9% CPU. A half-closed inbound socket (CLOSE-WAIT, pending
+  * 2026-05-27 — 99.9% CPU. A half-closed inbound socket (CLOSE-WAIT, pending
     EOF) is *permanently* readable to epoll; the poll-based reader spun
     ~34 000×/sec issuing ZERO recv syscalls.
 
@@ -28,10 +28,10 @@ import socket
 import unittest
 from typing import Any
 
-from rpyc.core.channel import Channel
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
-from rpyc.core.stream import SocketStream
+from rpyc_async.core.channel import Channel
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
+from rpyc_async.core.stream import SocketStream
 
 
 class TestOnReadableEofStorm(unittest.IsolatedAsyncioTestCase):
@@ -85,7 +85,7 @@ class TestOnReadableEofStorm(unittest.IsolatedAsyncioTestCase):
         conn, _a, state = await self._arm_closed()
         reader = state["reader"]
         self.assertIsNotNone(reader, "enable_asyncio_serving must register a reader")
-        # Firing on a fully-closed peer must NOT raise (the log storm
+        # Firing on a fully-closed peer must NOT raise (the 2026-05-23 storm
         # was an EOFError escaping the callback).
         try:
             reader()

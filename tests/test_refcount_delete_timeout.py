@@ -34,7 +34,7 @@ import sys
 import time
 import unittest
 
-import rpyc
+import rpyc_async as rpyc
 
 from tests.support import mp_asyncio_server
 
@@ -71,7 +71,7 @@ class _SlowDeleteService(rpyc.Service):
         conn._handle_del = slow_handle_del
         # Also replace in the handler dispatch table so incoming
         # HANDLE_DEL messages hit the wrapped version.
-        from rpyc.core import consts
+        from rpyc_async.core import consts
         conn._HANDLERS[consts.HANDLE_DEL] = (
             lambda self_conn, obj, count=1: slow_handle_del(obj, count)
         )

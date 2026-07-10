@@ -1,7 +1,7 @@
 """Regression tests for the GC-of-pending-task leak path that the
-earlier cancel-aware ``__await__`` fix did NOT cover.
+2026-04-27 cancel-aware ``__await__`` fix did NOT cover.
 
-Production observation (a downstream application, second
+Production observation (downstream application, 2026-05-08, second
 recurrence): a process running with the cancel-aware fix in place
 still accumulated ~200 000 leaked AsyncResult chains over 20 hours.
 Heap walk showed the textbook signature — AsyncResult, _asyncio.Task,
@@ -18,7 +18,7 @@ out in the CPython docs). When the caller discards the return value
 the Task is collected. Its coroutine frame is destroyed, and the
 ``future = loop.create_future()`` inside ``AsyncResult.__await__``
 is destroyed in **pending** state — never set_result, never
-set_exception, never cancel. The earlier fix relies on
+set_exception, never cancel. The 2026-04-27 fix relies on
 ``future.add_done_callback`` to clean ``_request_callbacks``; that
 callback never fires because the future never reaches a done state.
 The AsyncResult therefore stays pinned in
@@ -50,7 +50,7 @@ import asyncio
 import gc
 import unittest
 
-from rpyc.core.async_ import AsyncResult
+from rpyc_async.core.async_ import AsyncResult
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ class TestFireAndForgetStrongRef(unittest.IsolatedAsyncioTestCase):
         the strong-ref invariant is both deterministic and exactly
         the property the fix promises.
         """
-        from rpyc.utils import helpers
+        from rpyc_async.utils import helpers
 
         inflight = getattr(helpers, "_INFLIGHT", None)
         self.assertIsNotNone(
@@ -109,7 +109,7 @@ class TestFireAndForgetStrongRef(unittest.IsolatedAsyncioTestCase):
             "asyncio._all_tasks's WeakSet is the only ref; the GC "
             "of the discarded return value collects the Task in "
             "pending state and leaks the surrounding AsyncResult "
-            "chain. See a related internal incident analysis."
+            "chain. See a related internal incident analysis (not included here)."
         )
 
         async def hangs() -> None:
@@ -140,7 +140,7 @@ class TestFireAndForgetStrongRef(unittest.IsolatedAsyncioTestCase):
         Verified by introspecting the helpers module's strong-ref
         set: a finished task must not be in it.
         """
-        from rpyc.utils import helpers
+        from rpyc_async.utils import helpers
 
         inflight = getattr(helpers, "_INFLIGHT", None)
         self.assertIsNotNone(
@@ -168,7 +168,7 @@ class TestFireAndForgetStrongRef(unittest.IsolatedAsyncioTestCase):
 
     async def test_strong_ref_released_on_exception(self) -> None:
         """Same auto-release contract on the exception path."""
-        from rpyc.utils import helpers
+        from rpyc_async.utils import helpers
 
         inflight = getattr(helpers, "_INFLIGHT", None)
         self.assertIsNotNone(inflight)
@@ -192,7 +192,7 @@ class TestFireAndForgetStrongRef(unittest.IsolatedAsyncioTestCase):
 
     async def test_strong_ref_released_on_cancel(self) -> None:
         """Same auto-release contract on cancellation."""
-        from rpyc.utils import helpers
+        from rpyc_async.utils import helpers
 
         inflight = getattr(helpers, "_INFLIGHT", None)
         self.assertIsNotNone(inflight)

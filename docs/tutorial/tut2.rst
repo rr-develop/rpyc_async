@@ -13,7 +13,7 @@ Setup
 -----
 Start a classic server using::
 
-    python bin/rpyc_classic.py
+    python bin/rpyc_async_classic.py
 
 And connect your client::
 
@@ -116,9 +116,9 @@ Custom Exception Handling Example
 ---------------------------------
 The server example::
 
-    import rpyc
+    import rpyc_async as rpyc
     import urllib.error
-    from rpyc.utils.server import OneShotServer
+    from rpyc_async.utils.server import OneShotServer
 
 
     class HelloService(rpyc.Service):
@@ -138,7 +138,7 @@ The server example::
 
 The client example::
 
-    import rpyc
+    import rpyc_async as rpyc
     import urllib.error
     rpyc.core.vinegar._generic_exceptions_cache["urllib.error.URLError"] = urllib.error.URLError
 

@@ -19,7 +19,7 @@ channel at all.
 import inspect
 import unittest
 
-from rpyc.core.protocol import Connection
+from rpyc_async.core.protocol import Connection
 
 
 class TestConnectionAsyncioSimple(unittest.TestCase):

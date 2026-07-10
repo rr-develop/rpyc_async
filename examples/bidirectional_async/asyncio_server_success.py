@@ -15,8 +15,8 @@ Usage:
     python3 asyncio_server_success.py
 """
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 
 # ═══════════════════════════════════════════════════════════════

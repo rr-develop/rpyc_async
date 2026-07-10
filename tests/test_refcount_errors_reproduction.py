@@ -45,7 +45,7 @@ Two of the nine original scenarios are retained because they target
 the exact shape of warnings that motivated the audit: rapid fan-out
 of short-lived netrefs and repeated netrefs over the same bound
 method (the `('builtins.method', ..., seq)` pattern observed in
-a downstream application's logs). Both are rewritten as:
+a downstream application's error log). Both are rewritten as:
 
   * event-driven — no polling, no sync RPC from the asyncio loop,
   * mp_asyncio_server topology — server and client in different
@@ -61,7 +61,7 @@ import io
 import sys
 import unittest
 
-import rpyc
+import rpyc_async as rpyc
 
 from tests.support import mp_asyncio_server
 
@@ -80,7 +80,7 @@ class _FanOutService(rpyc.Service):
     async def exposed_shared_method_getter(self):
         """Return the same bound-method netref repeatedly — this is
         the code path that produces `('builtins.method', …)` id_pack
-        churn observed in a downstream application's logs."""
+        churn observed in a downstream application's error log."""
         return self._shared_obj.get
 
     async def exposed_registry_size(self) -> int:
@@ -173,7 +173,7 @@ class TestRefcountNoErrorsInSteadyState(unittest.TestCase):
         """Fetch the same bound method 50 times, drop every ref,
         let cleanup drain. This is the exact shape of churn that
         produced 42 identical-id_pack DECREF warnings in a downstream
-        application's logs prior to the variant A + cleanup-loop fixes. Under
+        application's error log prior to the variant A + cleanup-loop fixes. Under
         the current code, zero warnings in the steady-state window."""
 
         cap = io.StringIO()

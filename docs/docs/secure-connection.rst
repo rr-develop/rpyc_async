@@ -8,8 +8,8 @@ connection.
 
 Server side::
 
-    from rpyc.utils.authenticators import SSLAuthenticator
-    from rpyc.utils.server import ThreadedServer
+    from rpyc_async.utils.authenticators import SSLAuthenticator
+    from rpyc_async.utils.server import ThreadedServer
 
     # ...
 
@@ -19,7 +19,7 @@ Server side::
 
 Client side::
 
-    import rpyc
+    import rpyc_async as rpyc
 
     conn = rpyc.ssl_connect("hostname", port = 12345, keyfile="client.key",
                             certfile="client.cert")

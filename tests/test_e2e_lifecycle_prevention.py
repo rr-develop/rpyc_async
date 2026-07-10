@@ -10,9 +10,9 @@ lifecycle management system works end-to-end.
 import unittest
 import asyncio
 import time
-import rpyc
+import rpyc_async as rpyc
 import gc
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 from multiprocessing import Process, Queue
 from tests.support import get_free_port
 

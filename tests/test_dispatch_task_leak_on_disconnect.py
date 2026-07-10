@@ -1,8 +1,8 @@
 """Regression test: pending ``_dispatch_request_async`` tasks must not
 accumulate when the peer disconnects mid-handler.
 
-Bug (observed in production; see a related internal incident analysis,
-not included here — ~14.4 GB RAM in 6 hours):
+Bug (production, downstream application, 2026-04-25 incident, ~14.4 GB RAM in
+6 hours):
 
     Each incoming MSG_REQUEST/MSG_ASYNC_REQUEST schedules
     ``_dispatch_request_async`` via
@@ -48,8 +48,8 @@ import gc
 import unittest
 import weakref
 
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class _BlockingChannel:
@@ -151,7 +151,7 @@ class TestDispatchTaskLeakOnDisconnect(unittest.IsolatedAsyncioTestCase):
 
         # Hang-forever handler. Each dispatched request parks here
         # until someone cancels its enclosing Task.
-        from rpyc.core import consts
+        from rpyc_async.core import consts
         hang_signal = loop.create_future()  # never set
 
         async def _hanging_handler(self, *args, **kwargs):

@@ -2,7 +2,7 @@ from __future__ import print_function
 import sys
 import pickle  # noqa
 import timeit
-import rpyc
+import rpyc_async as rpyc
 import unittest
 from tests import cfg_tests
 try:

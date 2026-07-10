@@ -1,6 +1,6 @@
-import rpyc
-from rpyc.utils.server import ThreadedServer
-from rpyc import SlaveService
+import rpyc_async as rpyc
+from rpyc_async.utils.server import ThreadedServer
+from rpyc_async import SlaveService
 import unittest
 
 
@@ -15,7 +15,7 @@ class Test_get_id_pack(unittest.TestCase):
         cls.thd = cls.server._start_in_thread()
         cls.thd2 = cls.server2._start_in_thread()
         cls.conn = rpyc.classic.connect("localhost", port=cls.port)
-        cls.conn_rpyc = cls.conn.root.getmodule('rpyc')
+        cls.conn_rpyc = cls.conn.root.getmodule('rpyc_async')
         cls.chained_conn = cls.conn_rpyc.connect('localhost', cls.port2)
 
     @classmethod
@@ -38,12 +38,12 @@ class Test_get_id_pack(unittest.TestCase):
     def test_class_instance_wo_name(self):
         ss = rpyc.SlaveService()
         id_pack = rpyc.lib.get_id_pack(ss)
-        self.assertEqual('rpyc.core.service.SlaveService', id_pack[0])
+        self.assertEqual('rpyc_async.core.service.SlaveService', id_pack[0])
 
     def test_class_wo_name(self):
         ss = rpyc.SlaveService
         id_pack = rpyc.lib.get_id_pack(ss)
-        self.assertEqual('rpyc.core.service.SlaveService', id_pack[0])
+        self.assertEqual('rpyc_async.core.service.SlaveService', id_pack[0])
 
 
 if __name__ == "__main__":

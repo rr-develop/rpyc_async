@@ -1,5 +1,5 @@
 from safegtk import SafeGTK
-import rpyc
+import rpyc_async as rpyc
 import gobject
 import gtk
 import pygtk

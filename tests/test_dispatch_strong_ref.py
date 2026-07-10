@@ -1,7 +1,7 @@
 """Regression tests for inbound ``_dispatch_request_async`` Task
 strong-ref pin and Connection.close cleanup.
 
-Bug (production, a downstream application incident, ~12.1 GB RAM
+Bug (production, downstream application, 2026-05-11 incident, ~12.1 GB RAM
 in 3 days):
 
     rpyc/core/protocol.py:1822 schedules an inbound MSG_REQUEST via
@@ -20,18 +20,18 @@ in 3 days):
     task disappearing mid-execution").
 
     On a long-running busy process under bidirectional async
-    traffic (e.g. a downstream application ↔ peer), GC eventually
+    traffic (e.g. a downstream client ↔ agent), GC eventually
     collects an inbound dispatch task that was parked on
     ``await handler_func(...)``. The handler's coroutine frame is
     destroyed mid-await; if the handler was itself waiting on an
     outbound AsyncResult issued via ``conn.root.method()``, that
     outbound AsyncResult is left orphan in
-    ``Connection._request_callbacks``. The earlier cancel-aware
+    ``Connection._request_callbacks``. The 2026-04-27 cancel-aware
     fix on ``AsyncResult.__await__`` cannot help because the inner
     ``future`` never reaches a done state — the parent Task that
     would have completed it is gone.
 
-    Heap dump of the affected process showed 1 941 735 leaked
+    Heap dump of the 2026-05-11 process showed 1 941 735 leaked
     AsyncResult chains pinning 12.1 GB of Python heap. See a related
     internal incident analysis (not included here).
 
@@ -53,9 +53,9 @@ import asyncio
 import gc
 import unittest
 
-from rpyc.core import consts, protocol
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core import consts, protocol
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 # --------------------------------------------------------------------
@@ -122,8 +122,8 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
             "_all_tasks (WeakSet) is the only reference, and a "
             "GC cycle can collect a parked dispatch Task, "
             "leaking the outbound AsyncResult chain the handler "
-            "was awaiting. See "
-            "a related internal incident analysis."
+            "was awaiting. See a related internal incident "
+            "analysis (not included here)."
         )
         inflight = protocol._DISPATCH_INFLIGHT
         self.assertIsInstance(
@@ -156,7 +156,7 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
         # Drive the actual _dispatch path with a real MSG_REQUEST
         # frame. We hand-construct the body the same way the wire
         # protocol does: brine-encoded (seq, (handler_id, args)).
-        from rpyc.core import brine
+        from rpyc_async.core import brine
         seq = 0xDEAD_BEEF
         data = brine.I1.pack(consts.MSG_REQUEST) + brine.dump(
             (seq, (consts.HANDLE_ASYNC_CALL, (consts.LABEL_TUPLE, ())))
@@ -208,7 +208,7 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
         inflight = protocol._DISPATCH_INFLIGHT
         before = len(inflight)
 
-        from rpyc.core import brine
+        from rpyc_async.core import brine
         seq = 0x1234
         data = brine.I1.pack(consts.MSG_REQUEST) + brine.dump(
             (seq, (consts.HANDLE_ASYNC_CALL, (consts.LABEL_TUPLE, ())))
@@ -232,7 +232,7 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_dispatch_does_not_call_asyncio_all_tasks(self) -> None:
-        """Regression for the O(N²) dispatch livelock.
+        """Regression for the 2026-05-11 livelock.
 
         The first cut of the strong-ref pin (commit 0858bd3) used
         a post-hoc lookup: after ``run_coroutine_threadsafe``
@@ -251,7 +251,7 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
         hit livelock after ~26 minutes with N≈32 600 — every
         new MSG_REQUEST cost ~30 000 task-iterations,
         ``run_forever`` could no longer drain events fast enough
-        to make progress, the process burned 60-80 % CPU producing
+        to make progress, the agent burned 60-80 % CPU producing
         zero useful work.
 
         The contract this test enforces: ``_dispatch`` MUST NOT
@@ -285,7 +285,7 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
 
         _asy.all_tasks = counting_all_tasks
         try:
-            from rpyc.core import brine
+            from rpyc_async.core import brine
             seq = 0xCAFE
             data = brine.I1.pack(consts.MSG_REQUEST) + brine.dump(
                 (seq, (consts.HANDLE_ASYNC_CALL, (consts.LABEL_TUPLE, ())))
@@ -303,8 +303,8 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
             f"_dispatch called asyncio.all_tasks() {call_count[0]} "
             f"time(s) while scheduling a single MSG_REQUEST. "
             f"This is the O(N²) livelock pattern from commit "
-            f"0858bd3 and a related production incident — "
-            f"see a related internal incident analysis. "
+            f"0858bd3 and the 2026-05-11 incident — "
+            f"see a related internal incident analysis (not included here). "
             f"Pin the Task at the moment of creation instead "
             f"(loop.create_task in a call_soon_threadsafe bridge), "
             f"not by post-hoc all_tasks() scan."

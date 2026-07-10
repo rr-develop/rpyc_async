@@ -5,7 +5,7 @@ Tests verify that new async constants are defined correctly
 and don't conflict with existing constants.
 """
 import unittest
-from rpyc.core import consts
+from rpyc_async.core import consts
 
 
 class TestAsyncConstants(unittest.TestCase):

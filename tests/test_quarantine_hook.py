@@ -18,9 +18,9 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from rpyc.core import protocol
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core import protocol
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class _SilentChannel:

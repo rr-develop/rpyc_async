@@ -8,9 +8,9 @@ import unittest
 import asyncio
 import inspect
 from unittest.mock import Mock
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
-from rpyc.core import consts
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
+from rpyc_async.core import consts
 
 
 class TestAsyncBoxing(unittest.TestCase):

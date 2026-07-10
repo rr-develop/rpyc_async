@@ -29,8 +29,8 @@ import textwrap
 import unittest
 from unittest import mock
 
-from rpyc.core import protocol
-from rpyc.utils import async_server
+from rpyc_async.core import protocol
+from rpyc_async.utils import async_server
 
 
 def _find_async_function(source: str, name: str) -> ast.AsyncFunctionDef:
@@ -208,7 +208,7 @@ class TestServeConnectionDoesNotBurnCPU(unittest.IsolatedAsyncioTestCase):
     """
 
     async def test_serve_connection_does_not_sleep_while_waiting_for_close(self):
-        from rpyc.core.protocol import Connection
+        from rpyc_async.core.protocol import Connection
 
         # Build a minimal Connection double that supports close() + event-driven wait.
         # We don't need full RPyC — we only test the waiting contract.
@@ -261,7 +261,7 @@ class TestServeConnectionDoesNotBurnCPU(unittest.IsolatedAsyncioTestCase):
             sleep_calls.append(delay)
             return await real_sleep(delay, *a, **kw)
 
-        with mock.patch("rpyc.utils.async_server.asyncio.sleep", counting_sleep):
+        with mock.patch("rpyc_async.utils.async_server.asyncio.sleep", counting_sleep):
             task = asyncio.create_task(server._serve_connection(conn, sock=None))
             # Give the serve task a few real ticks to establish its wait.
             for _ in range(5):
@@ -285,7 +285,7 @@ class TestAsyncReaderHasNoPolling(unittest.TestCase):
     its nested ``on_readable``). These MUST be purely event-driven: one
     non-blocking ``recv_available()`` per ``add_reader`` wakeup + in-memory
     framing. Re-introducing a socket poll here brings back the 99.9%-CPU
-    half-closed-socket busy-loop (observed in a downstream application).
+    half-closed-socket busy-loop (observed in a downstream application, 2026-05-27).
     See docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
     """
 

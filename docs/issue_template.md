@@ -22,8 +22,8 @@ stack trace / error log
 Server:
 
 ```python
-import rpyc
-from rpyc.utils.server import OneShotServer
+import rpyc_async as rpyc
+from rpyc_async.utils.server import OneShotServer
 
 
 class HelloService(rpyc.Service):
@@ -41,7 +41,7 @@ if __name__ == "__main__":
 Client:
 
 ```python
-import rpyc
+import rpyc_async as rpyc
 
 
 if __name__ == "__main__":

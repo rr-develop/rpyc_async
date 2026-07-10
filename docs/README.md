@@ -40,7 +40,7 @@ pip install rpyc-async
 ```python
 # server.py
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 class MyService(rpyc.Service):
     async def exposed_async_hello(self, name):
@@ -56,7 +56,7 @@ if __name__ == "__main__":
 ```python
 # client.py
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)

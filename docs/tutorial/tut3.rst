@@ -15,7 +15,7 @@ Services are quite simple really. To prove that, the ``SlaveService`` (the servi
 implements classic RPyC) is only 30 lines long, including comments ;). Basically, a service
 has the following boilerplate::
 
-    import rpyc
+    import rpyc_async as rpyc
 
     class MyService(rpyc.Service):
         def on_connect(self, conn):
@@ -55,7 +55,7 @@ ways to do that, but the simplest is ::
     # ... continuing the code snippet from above ...
 
     if __name__ == "__main__":
-        from rpyc.utils.server import ThreadedServer
+        from rpyc_async.utils.server import ThreadedServer
         t = ThreadedServer(MyService, port=18861)
         t.start()
 
@@ -92,7 +92,7 @@ By default methods and attributes are only visible if they start with the
 as lists or dicts are not accessible by default. If needed, you can configure
 this by passing appropriate options when creating the server. For example::
 
-    from rpyc.utils.server import ThreadedServer
+    from rpyc_async.utils.server import ThreadedServer
     server = ThreadedServer(MyService, port=18861, protocol_config={
         'allow_public_attrs': True,
     })
@@ -129,7 +129,7 @@ the situation is slightly more tricky if you want to pass arguments while
 separating the root objects for each connection. In this case, use
 :func:`~rpyc.utils.helpers.classpartial` like so::
 
-        from rpyc.utils.helpers import classpartial
+        from rpyc_async.utils.helpers import classpartial
 
         service = classpartial(MyService, 1, 2, pi=3)
         t = ThreadedServer(service, port=18861)
@@ -159,7 +159,7 @@ In the original code snippet, this is what the client gets::
 
 The reason services have names is for the **service registry**: normally, a server will
 broadcast its details to a nearby :ref:`registry server <registry-server>` for discovery.
-To use service discovery, a make sure you start the ``bin/rpyc_registry.py``.
+To use service discovery, a make sure you start the ``bin/rpyc_async_registry.py``.
 This server listens on a broadcast UDP socket, and will
 answer to queries about  which services are running where.
 

@@ -1,4 +1,4 @@
-import rpyc
+import rpyc_async as rpyc
 
 
 c = rpyc.connect_by_service("TIME")

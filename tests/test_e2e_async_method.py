@@ -32,8 +32,8 @@ NO THREADS are created by tests! Each process uses its own event loop in main th
 import unittest
 import asyncio
 import time
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 from multiprocessing import Process, Queue
 from tests.support import get_free_port
 

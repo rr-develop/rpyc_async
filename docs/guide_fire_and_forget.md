@@ -36,7 +36,7 @@ sync callback, you wanted `fire_and_forget_async()`. The examples below use
 
 ```python
 import asyncio
-from rpyc.utils.helpers import fire_and_forget
+from rpyc_async.utils.helpers import fire_and_forget
 
 async def my_async_task(value: int) -> int:
     await asyncio.sleep(1)
@@ -65,8 +65,8 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from rpyc.core.async_connect import async_connect
-from rpyc.utils.helpers import fire_and_forget_async
+from rpyc_async.core.async_connect import async_connect
+from rpyc_async.utils.helpers import fire_and_forget_async
 
 async def on_result(result):
     await store(result)
@@ -106,7 +106,7 @@ asyncio.run(main())
 For callbacks that need to perform async operations, use `fire_and_forget_async()`:
 
 ```python
-from rpyc.utils.helpers import fire_and_forget_async
+from rpyc_async.utils.helpers import fire_and_forget_async
 
 async def on_success(result):
     # Can await here
@@ -191,8 +191,8 @@ fire-and-forget — wrap the netref in `rpyc.async_()` (see Troubleshooting). On
 
 ```python
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 class MyService(rpyc.Service):
     async def exposed_long_task(self, value: int) -> int:
@@ -220,8 +220,8 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from rpyc.core.async_connect import async_connect
-from rpyc.utils.helpers import fire_and_forget
+from rpyc_async.core.async_connect import async_connect
+from rpyc_async.utils.helpers import fire_and_forget
 
 async def main():
     # async_connect automatically enables asyncio serving

@@ -26,12 +26,12 @@ If you wish to implement new servers (say, reactor-based, etc.), you can derive 
 
 Classic Server
 --------------
-RPyC comes "bundled" with a :ref:`classic`-mode server -- :file:`rpyc_classic.py`. This executable
+RPyC comes "bundled" with a :ref:`classic`-mode server -- :file:`rpyc-async-classic`. This executable
 script takes several command-line switches and starts an RPyC server exposing the
 ``ClassicService``. It is installed to your python's ``scripts/`` directory, and should be
 executable from the command line. Example usage::
 
-    $ ./rpyc_classic.py -m threaded -p 12333
+    $ rpyc-async-classic -m threaded -p 12333
     INFO:SLAVE/12333:server started on [0.0.0.0]:12333
     INFO:SLAVE/12333:accepted 127.0.0.1:34044
     INFO:SLAVE/12333:welcome [127.0.0.1]:34044
@@ -98,8 +98,8 @@ Starting an RPyC server that exposes your service is quite easy -- when you cons
 :class:`rpyc.utils.server.Server` instance, pass it your :class:`rpyc.core.service.Service` factory.
 You can use the following snippet::
 
-  import rpyc
-  from rpyc.utils.server import ThreadedServer # or ForkingServer
+  import rpyc_async as rpyc
+  from rpyc_async.utils.server import ThreadedServer # or ForkingServer
 
   class MyService(rpyc.Service):
       #
@@ -124,7 +124,7 @@ service ``Foo`` on ``myhost:17777``, you can register that server with the regis
 would allow clients to later query for the servers that expose that service (and get back a list
 of TCP endpoints). Example usage::
 
-    $ ./bin/rpyc_registry.py --listing
+    $ ./bin/rpyc_async_registry.py --listing
     DEBUG:REGSRV/UDP/18811:registering 172.18.0.6:18861 as MY
 
  For more info, see :ref:`api-registry`.

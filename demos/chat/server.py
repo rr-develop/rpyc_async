@@ -1,6 +1,6 @@
 from __future__ import with_statement
-from rpyc import Service, async_
-from rpyc.utils.server import ThreadedServer
+from rpyc_async import Service, async_
+from rpyc_async.utils.server import ThreadedServer
 from threading import RLock
 
 

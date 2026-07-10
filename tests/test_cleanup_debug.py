@@ -36,7 +36,7 @@ import sys
 import unittest
 from contextlib import redirect_stderr
 
-import rpyc
+import rpyc_async as rpyc
 
 from tests.support import mp_asyncio_server
 

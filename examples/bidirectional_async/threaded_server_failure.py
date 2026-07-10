@@ -19,8 +19,8 @@ Solution:
 """
 import sys
 import asyncio
-import rpyc
-from rpyc import ThreadedServer
+import rpyc_async as rpyc
+from rpyc_async import ThreadedServer
 import threading
 
 

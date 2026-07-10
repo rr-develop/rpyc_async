@@ -14,7 +14,7 @@ Let's start with the basics: running a server. In this tutorial we'll run both t
 the client on the same machine (the ``localhost``). The classic server can be
 started using::
 
-    $ python bin/rpyc_classic.py
+    $ python bin/rpyc_async_classic.py
     INFO:SLAVE/18812:server started on [127.0.0.1]:18812
 
 This shows the parameters this server is running with:
@@ -32,7 +32,7 @@ Running a Client
 The next step is running a client which connects to the server. The code needed to create a
 connection to the server is quite simple, you'd agree ::
 
-    import rpyc
+    import rpyc_async as rpyc
     conn = rpyc.classic.connect("localhost")
 
 If your server is not running on the default port (``TCP 18812``), you'll have
@@ -55,7 +55,7 @@ With this alone you are already set to do almost anything. For example, here
 is how you see the server's command line::
 
     >>> rsys.argv
-    ['bin/rpyc_classic.py']
+    ['bin/rpyc_async_classic.py']
 
 …add module search paths for the server's import mechanism::
 

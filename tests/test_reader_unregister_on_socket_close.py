@@ -1,7 +1,7 @@
 """TDD: the asyncio reader's lifetime is BOUND TO THE SOCKET.
 
-Root cause of a production 100%-CPU spin
-(a related internal incident analysis, not included here):
+Root cause of the 2026-05-27 100%-CPU spin observed in a downstream
+application (see a related internal incident analysis, not included here):
 
   The socket layer (``SocketStream.close()`` → ``sock.close()``) and the
   asyncio reader registration (``Connection.disable_asyncio_serving`` →
@@ -32,10 +32,10 @@ import socket
 import unittest
 from typing import Any
 
-from rpyc.core.channel import Channel
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
-from rpyc.core.stream import SocketStream
+from rpyc_async.core.channel import Channel
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
+from rpyc_async.core.stream import SocketStream
 
 
 class _Harness(unittest.IsolatedAsyncioTestCase):

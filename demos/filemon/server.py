@@ -1,4 +1,4 @@
-import rpyc
+import rpyc_async as rpyc
 import os
 import time
 from threading import Thread
@@ -29,5 +29,5 @@ class FileMonitorService(rpyc.Service):
 
 
 if __name__ == "__main__":
-    from rpyc.utils.server import ThreadedServer
+    from rpyc_async.utils.server import ThreadedServer
     ThreadedServer(FileMonitorService, port=18871).start()

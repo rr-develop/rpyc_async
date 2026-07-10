@@ -1,5 +1,5 @@
 import sys
-import rpyc
+import rpyc_async as rpyc
 from pathlib import Path
 
 def load_tests(loader, standard_tests, pattern):

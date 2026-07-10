@@ -32,8 +32,8 @@ This document provides practical examples of using async/await with RPyC.
 ```python
 # server.py
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 class AsyncCalculator(rpyc.Service):
     async def exposed_async_add(self, a, b):
@@ -63,7 +63,7 @@ the `main()` above.
 ```python
 # client.py
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     # Connect to server (non-blocking; enables asyncio serving for you)
@@ -92,8 +92,8 @@ if __name__ == "__main__":
 ```python
 import asyncio
 import time
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 class MixedService(rpyc.Service):
     """Service with both sync and async methods."""
@@ -133,7 +133,7 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)
@@ -160,7 +160,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)
@@ -182,7 +182,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)
@@ -210,7 +210,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 class AsyncRPyCConnection:
     """Async context manager for RPyC connection."""
@@ -242,7 +242,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 from typing import List
 
 class AsyncRPyCPool:
@@ -321,8 +321,8 @@ must not freeze the others, and must not freeze the caller.
 ```python
 import asyncio
 import json
-import rpyc
-from rpyc.utils.helpers import fire_and_forget_async
+import rpyc_async as rpyc
+from rpyc_async.utils.helpers import fire_and_forget_async
 
 PUSH_TIMEOUT = 10.0
 
@@ -387,8 +387,8 @@ Two footguns this example sidesteps:
 
 ```python
 import asyncio
-import rpyc
-from rpyc.utils.helpers import fire_and_forget_async
+import rpyc_async as rpyc
+from rpyc_async.utils.helpers import fire_and_forget_async
 
 async def on_success(result):
     await log_to_db(result)
@@ -431,7 +431,7 @@ asyncio.run(main())
 Use `fire_and_forget()` only when the callbacks are plain functions:
 
 ```python
-from rpyc.utils.helpers import fire_and_forget
+from rpyc_async.utils.helpers import fire_and_forget
 
 def on_success(result):
     counters["done"] += 1     # pure CPU, no await needed
@@ -510,8 +510,8 @@ asyncio.run(main())
 ```python
 # server.py
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 import asyncpg  # PostgreSQL async driver
 
 class AsyncDatabaseService(rpyc.Service):
@@ -551,7 +551,7 @@ if __name__ == "__main__":
 ```python
 # client.py
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)
@@ -586,8 +586,8 @@ asyncio.run(main())
 ```python
 # server.py
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 import aiohttp
 from bs4 import BeautifulSoup
 
@@ -647,7 +647,7 @@ if __name__ == "__main__":
 ```python
 # client.py
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)
@@ -678,8 +678,8 @@ asyncio.run(main())
 ```python
 # server.py
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 from typing import Dict, Any
 import uuid
 
@@ -731,7 +731,7 @@ if __name__ == "__main__":
 ```python
 # client.py
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)

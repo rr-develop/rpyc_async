@@ -21,8 +21,8 @@ import time
 from typing import Any
 
 import pytest
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 
 # ============================================================================
@@ -187,8 +187,8 @@ class TestBasicRPC:
     @pytest.mark.asyncio
     async def test_simple_rpc_call(self):
         """Test fire_and_forget with simple cross-process RPC call."""
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget
 
         port = 18861
         server_proc = await start_server(port)
@@ -227,8 +227,8 @@ class TestBasicRPC:
     @pytest.mark.asyncio
     async def test_rpc_with_timeout_success(self):
         """Test fire_and_forget RPC with timeout that doesn't expire."""
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget
 
         port = 18862
         server_proc = await start_server(port)
@@ -262,8 +262,8 @@ class TestBasicRPC:
     @pytest.mark.asyncio
     async def test_rpc_with_exception(self):
         """Test fire_and_forget RPC when remote raises exception."""
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget
 
         port = 18863
         server_proc = await start_server(port)
@@ -296,8 +296,8 @@ class TestBasicRPC:
     @pytest.mark.asyncio
     async def test_async_callbacks(self):
         """Test fire_and_forget_async with cross-process RPC."""
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         port = 18864
         server_proc = await start_server(port)
@@ -338,8 +338,8 @@ class TestHungConnection:
         This is the key requirement - fire_and_forget must complete quickly
         via local timeout, not wait for hung remote process.
         """
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget
 
         port = 18865
         server_proc = await start_server(port)
@@ -389,8 +389,8 @@ class TestHungConnection:
         With a short timeout, should get TimeoutError (not hang forever).
         The key requirement is that timeout fires locally, regardless of remote state.
         """
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget
 
         port = 18866
         server_proc = await start_server(port)
@@ -439,8 +439,8 @@ class TestHungConnection:
 
         Verifies that timeouts don't interfere with each other.
         """
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget
 
         port = 18867
         server_proc = await start_server(port)
@@ -509,8 +509,8 @@ class TestBidirectionalAsync:
 
         This requires AsyncioServer with proper event loop setup.
         """
-        from rpyc.core.async_connect import async_connect
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.core.async_connect import async_connect
+        from rpyc_async.utils.helpers import fire_and_forget
 
         port = 18868
         server_proc = await start_server(port)

@@ -2,16 +2,16 @@
 must survive GC of the Connection's last user-held reference, and
 must run its finally-drain to completion before going away.
 
-Production observation (a downstream application): the
+Production observation (downstream application, 2026-05-13): the
 log printed
 
     asyncio - ERROR - Task was destroyed but it is pending!
     task: <Task pending name='Task-3309'
            coro=<Connection._start_cleanup_task.<locals>.cleanup_loop()
-                  running at rpyc/core/protocol.py:939>
+                  running at rpyc_async/core/protocol.py:939>
            wait_for=<Future pending cb=[Task.task_wakeup()]>>
     WARNING: Failed to delete remote object
-             (a remote service netref).
+             ('...BoundAgentService', ...).
              Possible memory leak on remote side.
 
 Mechanism: ``cleanup_loop`` and the Connection that owns it form
@@ -21,7 +21,7 @@ Python's cycle collector breaks the cycle as soon as no EXTERNAL
 strong reference holds either end. ``asyncio._all_tasks`` is a
 ``WeakSet`` (does not count). When a downstream application evicts a
 torn-down Connection from its connection registry (the
-``is_connected`` liveness fix) and the last
+``is_connected`` liveness fix from 2026-04-27) and the last
 application reference goes away, the whole cycle becomes
 collectible. The cleanup_loop Task is destroyed mid-await,
 asyncio emits the warning, and any in-flight HANDLE_DEL on the
@@ -52,9 +52,9 @@ import gc
 import unittest
 import weakref
 
-from rpyc.core import protocol
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core import protocol
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class _SilentChannel:
@@ -109,7 +109,7 @@ class TestCleanupLoopPin(unittest.IsolatedAsyncioTestCase):
             "rpyc.core.protocol must expose a module-level set "
             "named _CLEANUP_LOOPS that holds strong refs to "
             "cleanup_loop Tasks across GC of their Connection. "
-            "See a related internal incident analysis."
+            "See a related internal incident analysis (not included here)."
         )
         self.assertIsInstance(protocol._CLEANUP_LOOPS, set)
 
@@ -143,7 +143,7 @@ class TestCleanupLoopPin(unittest.IsolatedAsyncioTestCase):
                     pass
 
     async def test_cleanup_loop_survives_connection_gc(self) -> None:
-        """The production failure mode: the last
+        """The 2026-05-13 production failure mode: the last
         application reference to a Connection goes away (e.g.
         a downstream application's connection registry evicts
         a torn-down conn). The cleanup_loop Task MUST run its

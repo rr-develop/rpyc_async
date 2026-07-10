@@ -4,7 +4,7 @@ Unit tests for HANDLE_DEL suppression on closed connection.
 Regression tests for the storm bug documented in
 a related internal incident analysis (not included here)
 and fixed per
-``docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md``.
+``rpyc_async/docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md``.
 
 Before the fix the cleanup loop would, on every iteration after a
 peer disconnect, attempt to send a HANDLE_DEL via
@@ -29,9 +29,9 @@ import sys
 import unittest
 from unittest.mock import Mock
 
-from rpyc.core import consts
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core import consts
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 def _make_conn():
@@ -67,7 +67,7 @@ class _DebugLogCapture(logging.Handler):
 
 
 class TestHandleDelSuppressOnClosed(unittest.TestCase):
-    """Regression suite for the HANDLE_DEL storm incident."""
+    """Regression suite for a related internal incident."""
 
     def setUp(self):
         self.conn = _make_conn()
@@ -142,7 +142,7 @@ class TestHandleDelSuppressOnClosed(unittest.TestCase):
             self.assertEqual(
                 self.stderr_buf.getvalue(), "",
                 "Storm warning must not be printed to stderr "
-                "(this is the regression of the HANDLE_DEL storm incident)",
+                "(this is the regression of a related internal incident)",
             )
             warns = self.cap.find(
                 logging.WARNING, "Failed to delete remote object"

@@ -1,4 +1,4 @@
-import rpyc
+import rpyc_async as rpyc
 import os
 from threading import Thread
 import time

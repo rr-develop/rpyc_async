@@ -1,5 +1,5 @@
-from rpyc.core import brine
-from rpyc.lib.compat import is_py_3k
+from rpyc_async.core import brine
+from rpyc_async.lib.compat import is_py_3k
 import unittest
 
 

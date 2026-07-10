@@ -1,9 +1,9 @@
 import time
 import unittest
 
-import rpyc
-from rpyc.utils.registry import TCPRegistryServer, TCPRegistryClient
-from rpyc.utils.registry import UDPRegistryServer, UDPRegistryClient
+import rpyc_async as rpyc
+from rpyc_async.utils.registry import TCPRegistryServer, TCPRegistryClient
+from rpyc_async.utils.registry import UDPRegistryServer, UDPRegistryClient
 
 
 PRUNING_TIMEOUT = 5

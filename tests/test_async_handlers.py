@@ -8,7 +8,7 @@ import unittest
 import asyncio
 import inspect
 from unittest.mock import Mock, MagicMock
-from rpyc.core import async_handlers
+from rpyc_async.core import async_handlers
 
 
 class TestAsyncHandlers(unittest.TestCase):
@@ -136,7 +136,7 @@ class TestAsyncHandlers(unittest.TestCase):
 
     def test_register_async_handlers(self):
         """Test that register_async_handlers adds handlers to connection."""
-        from rpyc.core import consts
+        from rpyc_async.core import consts
 
         # Create mock connection
         conn = Mock()

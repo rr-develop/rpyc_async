@@ -1,5 +1,5 @@
 import gdb
-import rpyc
+import rpyc_async as rpyc
 
 
 class GDBService(rpyc.Service):

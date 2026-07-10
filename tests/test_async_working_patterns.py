@@ -21,7 +21,7 @@ import asyncio
 import time
 import unittest
 
-import rpyc
+import rpyc_async as rpyc
 from tests.support import mp_asyncio_server
 
 

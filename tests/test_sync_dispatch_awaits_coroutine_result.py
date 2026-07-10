@@ -1,12 +1,12 @@
 """Regression test for: sync ``_dispatch_request`` must await coroutine results.
 
-Production failure mode
+Production failure mode (downstream application, 2026-05-27 / 2026-06-06)
 ================================================================
-A downstream application's callback service exposes ``exposed_on_message``
-declared ``async def`` to delegate into an async broadcast pipeline. The
+``MessageCallbackService.exposed_on_message`` on the web side is declared
+``async def`` to delegate into FastAPI's async broadcast pipeline. The
 agent invokes the subscriber via::
 
-    from rpyc.core.netref import asyncreq
+    from rpyc_async.core.netref import asyncreq
     awaitable = asyncreq(
         subscriber, 8,            # HANDLE_CALLATTR  (sync)
         "on_message", (payload,), (),
@@ -14,8 +14,8 @@ agent invokes the subscriber via::
     fire_and_forget_async(awaitable, timeout=10)
 
 That puts ``MSG_REQUEST`` + ``HANDLE_CALLATTR`` on the wire (because the
-caller chose this exact handler — as a downstream application's
-service layer does).
+caller chose this exact handler — as seen in a downstream client's
+service module).
 ``_needs_async_dispatch`` then returns ``False`` for the peer, because
 ``self._HANDLERS[HANDLE_CALLATTR]`` is a plain ``def`` — so the request
 falls into the synchronous ``_dispatch_request`` path.
@@ -63,8 +63,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-import rpyc
-from rpyc.core.async_connect import async_connect
+import rpyc_async as rpyc
+from rpyc_async.core.async_connect import async_connect
 from tests.support import mp_asyncio_server
 
 
@@ -75,7 +75,7 @@ class _SubscriberRelayService(rpyc.Service):
 
     ``exposed_register`` stashes the client callback netref. ``exposed_trigger``
     invokes it via ``asyncreq(HANDLE_CALLATTR=8)`` — the exact code path
-    a downstream application's service layer uses to broadcast
+    a downstream client's service module uses to broadcast
     messages to subscribers. We do NOT use ``rpyc.async_(...)`` or the
     async-flagged netref ``__call__``; that would mask the bug.
     """
@@ -90,11 +90,11 @@ class _SubscriberRelayService(rpyc.Service):
         cb = type(self)._callback
         if cb is None:
             return False
-        # Drive the callback the SAME way a downstream application does — sync
+        # Drive the callback the SAME way a downstream client does — sync
         # HANDLE_CALLATTR + asyncreq. The returned AsyncResult is what
         # ``fire_and_forget_async`` would await in production.
-        from rpyc.core.netref import asyncreq  # noqa: PLC0415
-        from rpyc.core import consts  # noqa: PLC0415
+        from rpyc_async.core.netref import asyncreq  # noqa: PLC0415
+        from rpyc_async.core import consts  # noqa: PLC0415
 
         awaitable = asyncreq(cb, consts.HANDLE_CALLATTR, "on_message", (payload,), ())
         # Await so the test can observe completion deterministically.

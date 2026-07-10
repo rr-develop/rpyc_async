@@ -25,9 +25,9 @@ import logging
 import unittest
 from unittest.mock import Mock
 
-from rpyc.core import consts
-from rpyc.core.protocol import Connection, DEFAULT_CONFIG
-from rpyc.core.service import VoidService
+from rpyc_async.core import consts
+from rpyc_async.core.protocol import Connection, DEFAULT_CONFIG
+from rpyc_async.core.service import VoidService
 
 
 def _make_conn():
@@ -201,7 +201,7 @@ class TestRefCountingCollNoALite(unittest.TestCase):
     """
 
     def test_add_same_key_same_object_increments_quietly(self):
-        from rpyc.lib.colls import RefCountingColl
+        from rpyc_async.lib.colls import RefCountingColl
 
         log = logging.getLogger("refcount-test")
         coll = RefCountingColl(logger=log, debug=False)
@@ -237,7 +237,7 @@ class TestRefCountingCollNoALite(unittest.TestCase):
         """Static guard: the 'slot[0] is not obj' branch is gone."""
         import ast
 
-        from rpyc.lib import colls as _colls_mod
+        from rpyc_async.lib import colls as _colls_mod
 
         src = inspect.getsource(_colls_mod.RefCountingColl.add)
         tree = ast.parse(src.lstrip())

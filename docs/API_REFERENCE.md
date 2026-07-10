@@ -44,7 +44,7 @@ Establish a connection from async code. **This is the entry point for `rpyc-asyn
 **Example:**
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861, timeout=5.0)
@@ -248,7 +248,7 @@ except AsyncResultTimeout:
 **Example:**
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 class MyService(rpyc.Service):
     async def exposed_async_hello(self, name):
@@ -315,7 +315,7 @@ helper pins it internally until it settles. Keep it only to `await` or
 `cancel()` it.
 
 ```python
-from rpyc.utils.helpers import fire_and_forget_async
+from rpyc_async.utils.helpers import fire_and_forget_async
 
 async def on_success(result):
     await log(result)
@@ -388,7 +388,7 @@ These flags are automatically set during object boxing/unboxing.
 
 ```python
 from typing import Awaitable
-import rpyc
+import rpyc_async as rpyc
 
 class MyService(rpyc.Service):
     async def exposed_async_add(self, a: int, b: int) -> int:

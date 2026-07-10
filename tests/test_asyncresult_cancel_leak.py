@@ -2,7 +2,8 @@
 must not leak its ``AsyncResult`` slot in
 ``Connection._request_callbacks``.
 
-Bug (production incident, ~9.4 GB RAM in 95 minutes):
+Bug (production, downstream application, 2026-04-27 incident, ~9.4 GB RAM in
+95 minutes):
 
     Every ``await conn.root.foo()`` goes through
     ``AsyncResult.__await__``. That method:
@@ -22,7 +23,7 @@ Bug (production incident, ~9.4 GB RAM in 95 minutes):
     Connection. The slot in ``_request_callbacks`` stays occupied
     until the peer finally replies. If the peer is dead, that never
     happens; if the caller is in a tight retry loop on a dying peer
-    (a downstream application's ``fire_and_forget_async`` path), the table
+    (a downstream ``fire_and_forget_async`` path), the table
     grows unboundedly. A heap dump of the production process showed
     ~115 000 leaked AsyncResult chains pinning ~8 GB of Python heap.
 
@@ -40,9 +41,9 @@ import asyncio
 import gc
 import unittest
 
-from rpyc.core import consts
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core import consts
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class _SilentChannel:

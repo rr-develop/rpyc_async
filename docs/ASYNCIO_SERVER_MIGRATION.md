@@ -212,8 +212,8 @@ Reject any PR that:
 ### Before (ThreadedServer - ❌ Bidirectional Async Fails)
 
 ```python
-import rpyc
-from rpyc import ThreadedServer
+import rpyc_async as rpyc
+from rpyc_async import ThreadedServer
 
 class MyService(rpyc.Service):
     async def exposed_process(self, callback, value):
@@ -238,8 +238,8 @@ server.start()  # Blocking
 
 ```python
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 class MyService(rpyc.Service):
     async def exposed_process(self, callback, value):
@@ -279,7 +279,7 @@ asyncio.run(main())
 
 ```python
 # Server
-from rpyc import ThreadedServer
+from rpyc_async import ThreadedServer
 
 class DataService(rpyc.Service):
     async def exposed_fetch_data(self, user_id):
@@ -294,7 +294,7 @@ server.start()
 ```python
 # Client
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = rpyc.connect("localhost", 18861)
@@ -316,7 +316,7 @@ asyncio.run(main())
 ```python
 # Server
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 
 class DataService(rpyc.Service):
     async def exposed_fetch_data(self, user_id):
@@ -333,7 +333,7 @@ asyncio.run(main())
 ```python
 # Client (same as before)
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = rpyc.connect("localhost", 18861)
@@ -367,7 +367,7 @@ asyncio.run(main())
 
 ```python
 # Server
-from rpyc import ThreadedServer
+from rpyc_async import ThreadedServer
 
 class ProcessService(rpyc.Service):
     async def exposed_process_with_callback(self, callback, value):
@@ -382,7 +382,7 @@ server.start()
 ```python
 # Client
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 class ClientService(rpyc.Service):
     async def exposed_callback(self, value):
@@ -412,7 +412,7 @@ asyncio.run(main())
 ```python
 # Server
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 
 class ProcessService(rpyc.Service):
     async def exposed_process_with_callback(self, callback, value):
@@ -430,7 +430,7 @@ asyncio.run(main())
 ```python
 # Client (same as before)
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 class ClientService(rpyc.Service):
     async def exposed_callback(self, value):
@@ -475,7 +475,7 @@ asyncio.run(main())
 ```python
 # Server
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 
 class RecursiveService(rpyc.Service):
     async def exposed_countdown(self, callback, n):
@@ -501,7 +501,7 @@ asyncio.run(main())
 ```python
 # Client
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 class ClientService(rpyc.Service):
     def __init__(self, server_conn):
@@ -565,7 +565,7 @@ Final result: Server(5) -> Client(4) -> Server(3) -> Client(2) -> Server(1) -> C
 
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = rpyc.connect("localhost", 18861)
@@ -598,7 +598,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 from myapp.services import MyService
 
 async def main():
@@ -625,7 +625,7 @@ if __name__ == '__main__':
 ```python
 import asyncio
 import signal
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 from myapp.services import MyService
 
 async def main():
@@ -665,7 +665,7 @@ if __name__ == '__main__':
 
 ```python
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 from myapp.services import MyService
 
 async def background_task():
@@ -693,7 +693,7 @@ if __name__ == '__main__':
 
 ```python
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 from myapp.services import PublicService, AdminService
 
 async def main():
@@ -730,8 +730,8 @@ if __name__ == '__main__':
 ```python
 import asyncio
 import unittest
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 class TestMyService(unittest.TestCase):
     @classmethod

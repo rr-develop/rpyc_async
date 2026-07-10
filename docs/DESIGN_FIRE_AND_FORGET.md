@@ -902,7 +902,7 @@ if success_callback is not None:
 # Runtime detection (optional enhancement)
 def _check_asyncio_enabled(awaitable):
     """Check if awaitable is AsyncResult with asyncio enabled."""
-    from rpyc.core.async_ import AsyncResult
+    from rpyc_async.core.async_ import AsyncResult
     if isinstance(awaitable, AsyncResult):
         if not awaitable._conn._asyncio_enabled:
             raise RuntimeError(

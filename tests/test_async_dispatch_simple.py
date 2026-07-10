@@ -5,8 +5,8 @@ Tests verify methods exist without full Connection initialization.
 """
 import unittest
 import inspect
-from rpyc.core.protocol import Connection
-from rpyc.core import consts
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core import consts
 
 
 class TestAsyncDispatchSimple(unittest.TestCase):

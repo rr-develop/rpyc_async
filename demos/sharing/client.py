@@ -3,7 +3,7 @@ import time
 import signal
 import multiprocessing as mp
 import pdb  # noqa
-import rpyc
+import rpyc_async as rpyc
 import traceback
 
 

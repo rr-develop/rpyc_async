@@ -1,6 +1,6 @@
-import rpyc
-from rpyc.utils.server import ThreadedServer
-from rpyc import SlaveService
+import rpyc_async as rpyc
+from rpyc_async.utils.server import ThreadedServer
+from rpyc_async import SlaveService
 import unittest
 try:
     import urllib3

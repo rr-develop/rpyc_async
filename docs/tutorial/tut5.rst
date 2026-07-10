@@ -123,7 +123,7 @@ consider the following ``FileMonitor`` example -- it monitors a file
 (using :func:`os.stat`) for changes, and notifies the client when a change occurs
 (with the old and new ``stat`` results). ::
 
-    import rpyc
+    import rpyc_async as rpyc
     import os
     import time
     from threading import Thread
@@ -150,7 +150,7 @@ consider the following ``FileMonitor`` example -- it monitors a file
                     time.sleep(self.interval)
 
     if __name__ == "__main__":
-        from rpyc.utils.server import ThreadedServer
+        from rpyc_async.utils.server import ThreadedServer
         ThreadedServer(FileMonitorService, port = 18871).start()
 
 

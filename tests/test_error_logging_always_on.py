@@ -7,7 +7,7 @@ This test artificially triggers errors to verify the fix.
 import unittest
 import sys
 import io
-from rpyc.lib.colls import RefCountingColl
+from rpyc_async.lib.colls import RefCountingColl
 
 
 class TestErrorLoggingAlwaysOn(unittest.TestCase):

@@ -1,11 +1,11 @@
 from __future__ import with_statement
-from rpyc.utils.classic import teleport_function
-from rpyc.lib.compat import is_py_3k, is_py_gte38, is_py_gte311
-from rpyc.utils.teleportation import export_function, import_function
+from rpyc_async.utils.classic import teleport_function
+from rpyc_async.lib.compat import is_py_3k, is_py_gte38, is_py_gte311
+from rpyc_async.utils.teleportation import export_function, import_function
 import subprocess
 import sys
 import os
-import rpyc
+import rpyc_async as rpyc
 import types
 import unittest
 import tracemalloc
@@ -48,7 +48,7 @@ def bar():
 
 class TeleportationTest(unittest.TestCase):
     def setUp(self):
-        server_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "rpyc_classic.py")
+        server_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "rpyc_async_classic.py")
         self.proc = subprocess.Popen([sys.executable, server_file, "--mode=oneshot", "--host=localhost", "-p0"],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         line = self.proc.stdout.readline().strip()
@@ -125,8 +125,8 @@ class TeleportationTest(unittest.TestCase):
             export38 = get38_schema(pow38.__code__)
             schema37 = (pow37.__name__, pow37.__module__, pow37.__defaults__, pow37.__kwdefaults__, export37)
             schema38 = (pow38.__name__, pow38.__module__, pow38.__defaults__, pow38.__kwdefaults__, export38)
-            pow37_netref = self.conn.modules["rpyc.utils.teleportation"].import_function(schema37)
-            pow38_netref = self.conn.modules["rpyc.utils.teleportation"].import_function(schema38)
+            pow37_netref = self.conn.modules["rpyc_async.utils.teleportation"].import_function(schema37)
+            pow38_netref = self.conn.modules["rpyc_async.utils.teleportation"].import_function(schema38)
             self.assertEqual(pow37_netref(2, 3), pow37(2, 3))
             self.assertEqual(pow38_netref(2, 3), pow38(2, 3))
             self.assertEqual(pow37_netref(x=2, y=3), pow37(x=2, y=3))
@@ -140,7 +140,7 @@ class TeleportationTest(unittest.TestCase):
                 def pow311(x, y): return x ** y  # noqa
                 export311 = get311_schema(pow311.__code__)
                 schema311 = (pow311.__name__, pow311.__module__, pow311.__defaults__, pow311.__kwdefaults__, export311)
-                pow311_netref = self.conn.modules["rpyc.utils.teleportation"].import_function(schema311)
+                pow311_netref = self.conn.modules["rpyc_async.utils.teleportation"].import_function(schema311)
                 self.assertTrue(is_py_gte311)
                 pow311.__code__ = types.CodeType(*export311)  # pow311 = lambda x, y, /: x ** y
                 with self.assertRaises(TypeError):  # show local behavior

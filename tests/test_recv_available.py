@@ -21,7 +21,7 @@ from __future__ import annotations
 import socket
 import unittest
 
-from rpyc.core.stream import SocketStream
+from rpyc_async.core.stream import SocketStream
 
 
 class TestRecvAvailable(unittest.TestCase):

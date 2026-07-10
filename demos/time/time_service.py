@@ -1,5 +1,5 @@
 import time
-from rpyc import Service
+from rpyc_async import Service
 
 
 class TimeService(Service):

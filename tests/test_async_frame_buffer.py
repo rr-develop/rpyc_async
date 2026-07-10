@@ -23,9 +23,9 @@ from __future__ import annotations
 import unittest
 import zlib
 
-from rpyc.core.channel import Channel
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core.channel import Channel
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 def _frame(payload: bytes, *, compress: bool = False) -> bytes:

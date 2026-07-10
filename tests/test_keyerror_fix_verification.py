@@ -8,12 +8,12 @@ This test verifies that the fix prevents KeyError by:
 import pytest
 import socket
 
-import rpyc
-from rpyc.core import consts
-from rpyc.core.protocol import Connection
-from rpyc.core.channel import Channel
-from rpyc.core.netref import BaseNetref
-from rpyc.lib import get_id_pack
+import rpyc_async as rpyc
+from rpyc_async.core import consts
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.channel import Channel
+from rpyc_async.core.netref import BaseNetref
+from rpyc_async.lib import get_id_pack
 
 
 def test_box_uses_remote_ref_fallback_when_object_missing():

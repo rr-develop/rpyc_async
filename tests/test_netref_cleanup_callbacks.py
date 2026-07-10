@@ -9,9 +9,9 @@ import unittest
 import gc
 import weakref
 from unittest.mock import Mock, patch, MagicMock
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
-from rpyc.core import consts, netref
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
+from rpyc_async.core import consts, netref
 
 
 class TestNetrefCleanupCallbacks(unittest.TestCase):

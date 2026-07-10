@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-import rpyc
-from rpyc.core.async_ import AsyncResult
-from rpyc.core.async_connect import async_connect
+import rpyc_async as rpyc
+from rpyc_async.core.async_ import AsyncResult
+from rpyc_async.core.async_connect import async_connect
 from tests.support import mp_asyncio_server
 
 

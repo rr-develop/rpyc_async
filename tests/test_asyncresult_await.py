@@ -6,7 +6,7 @@ Tests verify that AsyncResult can be awaited in async context.
 import unittest
 import asyncio
 from unittest.mock import Mock
-from rpyc.core.async_ import AsyncResult
+from rpyc_async.core.async_ import AsyncResult
 
 
 class TestAsyncResultAwait(unittest.TestCase):

@@ -1,4 +1,4 @@
-import rpyc
+import rpyc_async as rpyc
 from time import sleep
 
 

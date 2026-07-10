@@ -38,8 +38,8 @@ import multiprocessing
 import sys
 
 import pytest
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -106,7 +106,7 @@ def _get_free_port() -> int:
 # ════════════════════════════════════════════════════════════════════
 @pytest.mark.asyncio
 async def test_no_storm_after_server_sigkill():
-    """Storm pattern from the incident must NOT reproduce
+    """Storm pattern from the related internal incident must NOT reproduce
     after a SIGKILL of the server: stderr stays bounded, and the
     client's pending deletions queue stays bounded.
 
@@ -115,7 +115,7 @@ async def test_no_storm_after_server_sigkill():
     (hundreds-to-thousands per id_pack) must not. The fix targets
     the post-close steady state, not the close-race itself.
     """
-    from rpyc.core.async_connect import async_connect
+    from rpyc_async.core.async_connect import async_connect
 
     port = _get_free_port()
     ready = multiprocessing.Event()

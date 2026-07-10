@@ -3,7 +3,7 @@ Simple test for debug_refcounting mode.
 """
 import logging
 from io import StringIO
-from rpyc.lib.colls import RefCountingColl
+from rpyc_async.lib.colls import RefCountingColl
 
 
 def test_refcounting_coll_debug_mode():

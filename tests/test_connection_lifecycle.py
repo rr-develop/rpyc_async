@@ -8,8 +8,8 @@ Tests the new infrastructure for improved netref garbage collection:
 import unittest
 from queue import Queue
 from unittest.mock import Mock
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class TestConnectionLifecycleInfrastructure(unittest.TestCase):

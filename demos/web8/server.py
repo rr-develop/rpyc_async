@@ -1,5 +1,5 @@
-import rpyc
-from rpyc.utils.server import ThreadedServer
+import rpyc_async as rpyc
+from rpyc_async.utils.server import ThreadedServer
 import time
 import threading
 

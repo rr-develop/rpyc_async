@@ -5,7 +5,7 @@
 Add support for asyncio-compatible `async def exposed_*` methods and async callbacks **without breaking changes** to the existing RPyC protocol.
 
 **Key requirements:**
-1. ✅ Backward compatibility - all existing code works without changes
+1. ✅ Backward compatibility - all existing code works unchanged
 2. ✅ Do not block the event loop on either the client or the server
 3. ✅ Do not require mandatory extra threads or nest_asyncio
 4. ✅ Support for async exposed methods
@@ -66,7 +66,7 @@ HANDLE_CALLATTR = 8    # ← Method call
 # ... and others
 ```
 
-#### Calling an Exposed Method (`protocol.py:_handle_call()`)
+#### Exposed Method Call (`protocol.py:_handle_call()`)
 ```python
 def _handle_call(self, obj, args, kwargs=()):
     return obj(*args, **dict(kwargs))  # ← Direct SYNC call!
@@ -107,18 +107,18 @@ MSG_ASYNC_REQUEST = 4      # Async request (result will be a coroutine)
 MSG_ASYNC_REPLY = 5        # Async reply (result was awaited)
 MSG_ASYNC_EXCEPTION = 6    # Async exception
 
-# New labels for boxing (complement the existing ones)
-LABEL_COROUTINE = 5        # The object is a coroutine
+# New labels for boxing (complement existing ones)
+LABEL_COROUTINE = 5        # Object is a coroutine
 LABEL_ASYNC_RESULT = 6     # Result from an async function
 
-# New handlers (complement the existing ones)
+# New handlers (complement existing ones)
 HANDLE_ASYNC_CALL = 21     # Call an async function (await)
 HANDLE_ASYNC_CALLATTR = 22 # Call an async method (await)
 ```
 
-**Backward compatibility:** Old clients/servers simply don't know about these constants and use the old ones.
+**Backward compatibility:** Old clients/servers simply do not know about these constants and use the old ones.
 
-### 2. Detecting Async Functions
+### 2. Defining Async Functions
 
 #### On the Server
 
@@ -135,13 +135,13 @@ class MyService(rpyc.Service):
         return a + b
 ```
 
-**How to detect it?**
+**How to detect this?**
 
 ```python
 import inspect
 
 def is_async_function(func):
-    """Checks whether a function is an async def."""
+    """Checks whether a function is async def."""
     return inspect.iscoroutinefunction(func)
 ```
 
@@ -172,25 +172,25 @@ def _box(self, obj):
     if brine.dumpable(obj):
         return consts.LABEL_VALUE, obj
 
-    # ✅ NEW: Check for a coroutine
+    # ✅ NEW: Coroutine check
     if inspect.iscoroutine(obj):
         # A coroutine cannot be sent over the network directly
-        # Instead, we return an AsyncResult that can be awaited
+        # Instead, return an AsyncResult that can be awaited
         async_result = AsyncResult(self)
-        # Schedule the coroutine's execution in the event loop
+        # Schedule the coroutine to run in the event loop
         self._schedule_coroutine(obj, async_result)
         return consts.LABEL_ASYNC_RESULT, async_result.____id_pack__
 
-    # ✅ NEW: Check for an async function
+    # ✅ NEW: Async function check
     if inspect.iscoroutinefunction(obj):
-        # This is an async function - box it as a REMOTE_REF
-        # but mark it with metadata indicating it is async
+        # This is an async function - pack it as a REMOTE_REF
+        # but mark with metadata that it is async
         id_pack = get_id_pack(obj)
         self._local_objects.add(id_pack, obj)
-        # Add an "is_async" flag to the id_pack
+        # Add an "is_async" flag to id_pack
         return consts.LABEL_REMOTE_REF, (*id_pack, {'async': True})
 
-    # Everything else as before
+    # The rest as before
     ...
 ```
 
@@ -207,16 +207,16 @@ def _unbox(self, package):
         return self._create_awaitable_result(value)
 
     if label == consts.LABEL_REMOTE_REF:
-        # Check the metadata: async function?
+        # Check metadata: async function?
         if isinstance(value, tuple) and len(value) == 4:
             id_pack, metadata = value[:3], value[3]
             if metadata.get('async'):
                 # This is an async function - create an async proxy
                 return self._create_async_proxy(id_pack)
-        # Ordinary sync function
+        # Regular sync function
         ...
 
-    # Everything else as before
+    # The rest as before
     ...
 ```
 
@@ -253,11 +253,11 @@ def _handle_async_call(self, obj, args, kwargs=()):
         return self._handle_call(obj, args, kwargs)
 
     # Return the coroutine (not awaited!)
-    # It will be boxed as LABEL_COROUTINE in _box()
+    # It will be packed as LABEL_COROUTINE in _box()
     return coro
 ```
 
-**Key difference:** We return the coroutine, not the result!
+**Key difference:** We return a coroutine, not a result!
 
 ### 5. Extending AsyncResult with `__await__()`
 
@@ -283,12 +283,12 @@ class AsyncResult:
                 raise self._obj
             return self._obj
 
-        # Create an asyncio Future and link it to the AsyncResult
+        # Create an asyncio Future and bind it to the AsyncResult
         loop = asyncio.get_running_loop()
         future = loop.create_future()
 
         def on_result(async_res):
-            """Callback when the result arrives."""
+            """Callback for when the result arrives."""
             if not future.done():
                 if async_res._is_exc:
                     loop.call_soon_threadsafe(future.set_exception, async_res._obj)
@@ -297,15 +297,15 @@ class AsyncResult:
 
         self.add_callback(on_result)
 
-        # Return the generator for await
+        # Return a generator for await
         return future.__await__()
 ```
 
-**Problem:** But who will call `conn.serve()`?
+**Problem:** But who is going to call `conn.serve()`?
 
-### 6. Asyncio-Native Serving
+### 6. Asyncio-Native Serving (as in arpyc)
 
-For `await` to work without blocking, event-driven serving is needed:
+For `await` to work without blocking, event-driven serving is required:
 
 ```python
 # In protocol.py
@@ -320,7 +320,7 @@ class Connection:
     def enable_asyncio_serving(self, loop=None):
         """Enable asyncio-native serving (optional).
 
-        After calling this method, connection.serve() will be called
+        After calling this method, connection.serve() will be invoked
         automatically when data is available in the event loop.
 
         Args:
@@ -334,11 +334,11 @@ class Connection:
         self._asyncio_loop = loop
 
         if not self._asyncio_reader_installed:
-            # Install a reader following an asyncio-native serving pattern
+            # Install a reader as in arpyc/session_native.py
             fd = self._channel.fileno()
 
             def on_readable():
-                """Callback when the socket is readable."""
+                """Callback for when the socket is readable."""
                 try:
                     # Process ALL available messages
                     while self._channel.poll(0):
@@ -359,7 +359,7 @@ class Connection:
 ```python
 # Client
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = rpyc.connect("localhost", 18861)
@@ -378,13 +378,13 @@ asyncio.run(main())
 
 ### 7. Smart Detection of the Call Mode
 
-The client must **automatically detect** sync vs async methods:
+The client must **automatically determine** sync vs async methods:
 
 ```python
 # In netref.py (BaseNetref)
 class BaseNetref:
     def __call__(self, *args, **kwargs):
-        """Call a proxy object."""
+        """Call the proxy object."""
         # Request metadata: is this an async function?
         is_async = self.____conn__._is_async_callable(self.____id_pack__)
 
@@ -397,7 +397,7 @@ class BaseNetref:
                 kwargs
             )
         else:
-            # Use the ordinary HANDLE_CALL
+            # Use the regular HANDLE_CALL
             return self.____conn__.sync_request(
                 consts.HANDLE_CALL,
                 self.____id_pack__,
@@ -406,14 +406,14 @@ class BaseNetref:
             )
 ```
 
-**Problem:** How to know `is_async` without an extra request?
+**Problem:** How to know `is_async` without an additional request?
 
 **Solution:** Cache the metadata in `id_pack` or in `HANDLE_INSPECT`.
 
 ```python
 # In protocol.py:_handle_inspect()
 def _handle_inspect(self, id_pack):
-    """Returns the object's methods AND metadata."""
+    """Returns the methods AND metadata of the object."""
     obj = self._local_objects[id_pack]
 
     methods = get_methods(netref.LOCAL_ATTRS, obj)
@@ -498,9 +498,9 @@ HANDLE_ASYNC_CALLATTR = 22
 - `_handle_async_callattr(obj, name, args, kwargs)` - handler for async methods
 - `_is_async_callable(id_pack)` - check async via cache
 
-**Change methods:**
+**Modify methods:**
 - `_box(obj)` - add handling of coroutines and async functions
-- `_unbox(package)` - add unboxing of LABEL_COROUTINE
+- `_unbox(package)` - add unpacking of LABEL_COROUTINE
 - `_handle_inspect(id_pack)` - return metadata about async methods
 
 ### 3. `rpyc/core/async_.py`
@@ -510,8 +510,8 @@ HANDLE_ASYNC_CALLATTR = 22
 
 ### 4. `rpyc/core/netref.py`
 
-**Change:**
-- `BaseNetref.__call__()` - detect async vs sync and pick the handler
+**Modify:**
+- `BaseNetref.__call__()` - determine async vs sync and choose the handler
 - `BaseNetref.__getattr__()` - cache async metadata
 
 ### 5. New file: `rpyc/core/asyncio_compat.py`
@@ -538,19 +538,19 @@ def create_awaitable_result(async_result, loop=None):
 
 ### Guarantees
 
-1. **Old client + old server**: Works as before (100% compatibility)
+1. **Old client + Old server**: Works as before (100% compatibility)
 
-2. **New client + old server**:
+2. **New client + Old server**:
    - Sync methods work as before
    - Async methods are unavailable (the old server does not support them)
    - No errors, async methods are simply called as sync
 
-3. **Old client + new server**:
+3. **Old client + New server**:
    - Sync methods work as before
    - Async methods are called as sync (the old client does not know about async)
    - The server runs the async method via `asyncio.run()` if needed
 
-4. **New client + new server**:
+4. **New client + New server**:
    - ✅ Sync methods work
    - ✅ Async methods work with await
    - ✅ Async callbacks work
@@ -559,7 +559,7 @@ def create_awaitable_result(async_result, loop=None):
 ### Capability Detection Mechanism
 
 ```python
-# During the handshake
+# During handshake
 class Connection:
     def __init__(self, root, channel, config={}):
         # ...
@@ -581,12 +581,12 @@ class Connection:
 **Server:**
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 class MyService(rpyc.Service):
     async def exposed_fetch_data(self, url):
         """Async method - can use await!"""
-        await asyncio.sleep(1)  # Simulated I/O
+        await asyncio.sleep(1)  # I/O simulation
         return f"Data from {url}"
 
 rpyc.ThreadedServer(MyService, port=18861).start()
@@ -595,7 +595,7 @@ rpyc.ThreadedServer(MyService, port=18861).start()
 **Client (New - with async/await):**
 ```python
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 
 async def main():
     conn = rpyc.connect("localhost", 18861)
@@ -610,7 +610,7 @@ asyncio.run(main())
 
 **Client (Old - sync):**
 ```python
-import rpyc
+import rpyc_async as rpyc
 
 conn = rpyc.connect("localhost", 18861)
 
@@ -626,7 +626,7 @@ print(result)
 class MyService(rpyc.Service):
     async def exposed_process_with_callback(self, callback):
         """Accepts an async callback."""
-        # Call the callback
+        # Invoke the callback
         result = await callback(42)  # ← await works!
         return f"Callback returned: {result}"
 ```
@@ -731,12 +731,12 @@ Async support **does not add new vulnerabilities**:
 ### Expected Improvements
 
 **With asyncio serving (vs BgServingThread):**
-- ✅ **~100-150x faster** for many concurrent calls
+- ✅ **~100-150x faster** for multiple parallel calls
 - ✅ **No polling delays** (0.1s in BgServingThread)
 - ✅ **Event-driven** instead of polling
 
 **With async exposed methods:**
-- ✅ The server can handle **thousands** of concurrent I/O operations
+- ✅ The server can handle **thousands** of parallel I/O operations
 - ✅ A single event loop instead of many threads
 
 ---
@@ -749,11 +749,11 @@ Async support **does not add new vulnerabilities**:
 2. **What if the event loop is not running?**
    - **Solution**: `enable_asyncio_serving()` raises `RuntimeError` if there is no event loop
 
-3. **How to work with older Python versions?**
-   - **Solution**: Python 3.7+ is required for async support (same as current RPyC)
+3. **How to support older Python versions?**
+   - **Solution**: Python 3.7+ is required for async support (as with current RPyC)
 
 4. **Thread safety with asyncio?**
-   - **Solution**: Asyncio serving runs in a single thread; thread safety is ensured via `loop.call_soon_threadsafe()`
+   - **Solution**: Asyncio serving runs in a single thread; thread-safety is ensured via `loop.call_soon_threadsafe()`
 
 ---
 
@@ -762,7 +762,7 @@ Async support **does not add new vulnerabilities**:
 1. [PEP 492 - Coroutines with async and await](https://www.python.org/dev/peps/pep-0492/)
 2. [asyncio Documentation](https://docs.python.org/3/library/asyncio.html)
 3. [RPyC Issue #506 - Async Coroutine Support](https://github.com/tomerfiliba-org/rpyc/issues/506)
-4. An internal research note on async recursion patterns (not included here)
+4. Our internal research document on async recursion (not included here).
 
 ---
 
@@ -778,4 +778,4 @@ Async support **does not add new vulnerabilities**:
 - ✅ Modern asyncio support
 - ✅ Competitiveness with other RPC frameworks
 - ✅ Preservation of unique advantages (transparency, symmetry)
-- ✅ Expansion of use cases (async web frameworks, high-concurrency apps)
+- ✅ Broader use-cases (async web frameworks, high-concurrency apps)

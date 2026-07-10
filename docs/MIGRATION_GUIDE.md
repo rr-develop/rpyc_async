@@ -37,8 +37,8 @@ of them per environment.
 
 ```python
 # server.py
-import rpyc
-from rpyc.utils.server import ThreadedServer
+import rpyc_async as rpyc
+from rpyc_async.utils.server import ThreadedServer
 import time
 
 class MyService(rpyc.Service):
@@ -51,7 +51,7 @@ ThreadedServer(MyService, port=18861).start()
 
 ```python
 # client.py
-import rpyc
+import rpyc_async as rpyc
 
 conn = rpyc.connect("localhost", 18861)
 result = conn.root.slow_operation()  # Blocks for 1 second
@@ -62,9 +62,9 @@ print(result)
 
 ```python
 # server.py
-import rpyc
+import rpyc_async as rpyc
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 
 class MyService(rpyc.Service):
     async def exposed_slow_operation(self):
@@ -80,9 +80,9 @@ asyncio.run(main())
 
 ```python
 # client.py
-import rpyc
+import rpyc_async as rpyc
 import asyncio
-from rpyc.core.async_connect import async_connect
+from rpyc_async.core.async_connect import async_connect
 
 async def main():
     conn = await async_connect("localhost", 18861)
@@ -232,7 +232,7 @@ class DBService(rpyc.Service):
 **After (async):**
 ```python
 import asyncpg
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 
 class DBService(rpyc.Service):
     def __init__(self, pool):
@@ -317,7 +317,7 @@ class BatchService(rpyc.Service):
 
 **Before:**
 ```python
-import rpyc
+import rpyc_async as rpyc
 
 conn = rpyc.connect("localhost", 18861)
 result = conn.root.method()
@@ -326,9 +326,9 @@ conn.close()
 
 **After:**
 ```python
-import rpyc
+import rpyc_async as rpyc
 import asyncio
-from rpyc.core.async_connect import async_connect
+from rpyc_async.core.async_connect import async_connect
 
 async def main():
     conn = await async_connect("localhost", 18861)
@@ -411,7 +411,7 @@ class TestMyService(unittest.TestCase):
 **After:**
 ```python
 import unittest
-from rpyc.core.async_connect import async_connect
+from rpyc_async.core.async_connect import async_connect
 
 class TestMyService(unittest.IsolatedAsyncioTestCase):
     async def test_method(self):

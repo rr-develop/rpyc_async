@@ -1,7 +1,7 @@
 """Regression tests: no traceback frame may be retained by a
 long-lived object after the exception has been handled.
 
-Production observation (a downstream application, ~17.8 GB RSS
+Production observation (downstream application, 2026-05-12, ~17.8 GB RSS
 in 19 hours): heap walk found 4 038 032 ``AsyncResult`` instances
 all pinned by 8 076 060 ``frame`` objects whose qualname was
 ``_handle_async_call`` at file
@@ -44,9 +44,9 @@ import sys
 import unittest
 import weakref
 
-from rpyc.core import consts
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core import consts
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class _SilentChannel:
@@ -90,7 +90,7 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
         ``Connection._last_traceback`` MUST NOT keep the handler's
         frame alive. The frame holds every local variable from
         the await chain — most importantly any AsyncResult the
-        handler was awaiting on. In production this pinned
+        handler was awaiting on. On 2026-05-12 this pinned
         ~4 M AsyncResult instances."""
         conn = _make_connection(self)
 
@@ -100,7 +100,7 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
         conn._HANDLERS = dict(conn._HANDLERS)
         conn._HANDLERS[consts.HANDLE_ASYNC_CALL] = _raiser
 
-        from rpyc.core import brine
+        from rpyc_async.core import brine
         seq = 0xABCDE
         data = brine.I1.pack(consts.MSG_REQUEST) + brine.dump(
             (seq, (consts.HANDLE_ASYNC_CALL, (consts.LABEL_TUPLE, ())))
@@ -122,7 +122,7 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
                     f"handler frame {qn!r}. This pins every local "
                     f"variable in that frame, including any "
                     f"AsyncResult the handler was awaiting on. "
-                    f"See a related internal incident analysis."
+                    f"See a related internal incident analysis (not included here)."
                 )
                 self.assertNotIn(
                     "_dispatch_request_async", qn,
@@ -202,7 +202,7 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
         conn._HANDLERS = dict(conn._HANDLERS)
         conn._HANDLERS[consts.HANDLE_ASYNC_CALL] = _handler_with_sentinel
 
-        from rpyc.core import brine
+        from rpyc_async.core import brine
         seq = 0xFEEDFACE
         data = brine.I1.pack(consts.MSG_REQUEST) + brine.dump(
             (seq, (consts.HANDLE_ASYNC_CALL, (consts.LABEL_TUPLE, ())))
@@ -227,13 +227,13 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
             "likely Connection._last_traceback). Every retained "
             "frame pins every local in it — for production this "
             "means each cancelled dispatch leaks a full AsyncResult "
-            "chain. See a related internal incident analysis."
+            "chain. See a related internal incident analysis (not included here)."
         )
 
     async def test_cancellation_does_not_retain_handler_frame(
         self,
     ) -> None:
-        """The production scenario: a dispatch task is
+        """The 2026-05-12 production scenario: a dispatch task is
         running inside ``_handle_async_call`` (or any other async
         handler that ``await``-s on an AsyncResult), and the
         Connection's ``_cleanup`` cancels it. The resulting
@@ -268,7 +268,7 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
         conn._HANDLERS = dict(conn._HANDLERS)
         conn._HANDLERS[consts.HANDLE_ASYNC_CALL] = _handler_that_parks
 
-        from rpyc.core import brine
+        from rpyc_async.core import brine
         seq = 0xC0FFEE
         data = brine.I1.pack(consts.MSG_REQUEST) + brine.dump(
             (seq, (consts.HANDLE_ASYNC_CALL, (consts.LABEL_TUPLE, ())))
@@ -282,7 +282,7 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
         # Cancel via _cleanup walk (this is what production does).
         # Walk _DISPATCH_INFLIGHT and cancel any task whose self is
         # this conn — mirrors Connection._cleanup's behaviour.
-        from rpyc.core import protocol as _p
+        from rpyc_async.core import protocol as _p
         for _task in list(_p._DISPATCH_INFLIGHT):
             try:
                 _coro = _task.get_coro()
@@ -309,7 +309,7 @@ class TestTracebackNoRetention(unittest.IsolatedAsyncioTestCase):
             wref(),
             "after _DISPATCH_INFLIGHT-driven cancellation, the "
             "handler frame's sentinel is still alive. This is the "
-            "production failure mode: each cancelled "
+            "production failure mode of 2026-05-12: each cancelled "
             "dispatch pins its handler frame's f_locals — which "
             "includes any AsyncResult the handler was awaiting on. "
             "Multiply by the number of in-flight requests at "

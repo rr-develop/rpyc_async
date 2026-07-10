@@ -1,8 +1,8 @@
 # rpyc-async — Detailed Implementation Design
 
 > **Product**: `rpyc-async` (distribution name), the import name remains `rpyc`.
-> This is an asyncio-native fork, split off from upstream RPyC 6.0.1 and developed
-> as an independent project with its own version **1.0.0**.
+> This is an asyncio-native fork that split off from upstream RPyC 6.0.1 and is
+> developed as a standalone project with its own version **1.0.0**.
 > Backward compatibility with classic synchronous RPyC is **not guaranteed**.
 > The minimum supported Python version is **3.10**.
 
@@ -988,9 +988,9 @@ rpyc-async:                 (class_name, obj_id, class_version, flags)
 
 ### Protocol Negotiation Flow
 
-> ⚠️ **Not implemented.** What follows is a *design proposal*, not a description of
-> current behaviour. As of today `consts.PROTOCOL_VERSION` is declared, but it is
-> never transmitted or compared against anything; the `____protocol_version__`
+> ⚠️ **Not implemented.** The following is a *design proposal*, not a description
+> of current behavior. As of today, `consts.PROTOCOL_VERSION` is declared but is
+> not transmitted or compared against anything; the `____protocol_version__`
 > attribute does not exist, and no version negotiation between peers takes place.
 > Both sides are required to use `rpyc-async`.
 
@@ -1025,9 +1025,9 @@ else:
 
 ## Interoperability Strategy
 
-> **Important**: rpyc-async is an independent project. Compatibility with classic
+> **Important**: rpyc-async is a standalone project. Compatibility with classic
 > synchronous RPyC at the API and protocol level is **not guaranteed**. The table
-> below describes observed behaviour with mixed peers, not a contract.
+> below describes observed behavior with mixed peers, not a contract.
 
 ### Interoperability Matrix
 
@@ -1491,7 +1491,7 @@ Benchmarks:
 
 import pytest
 import asyncio
-import rpyc
+import rpyc_async as rpyc
 from threading import Thread
 
 @pytest.fixture
@@ -1521,7 +1521,7 @@ def async_service():
 @pytest.fixture
 def async_server(async_service):
     """Start async RPyC server in background thread."""
-    from rpyc.utils.server import ThreadedServer
+    from rpyc_async.utils.server import ThreadedServer
 
     server = ThreadedServer(
         async_service,
@@ -1607,7 +1607,7 @@ def test_sync_call_no_regression(async_connection):
 
 ### Risk Matrix
 
-| Risk | Probability | Impact | Mitigation |
+| Risk | Likelihood | Impact | Mitigation |
 |------|-------------|---------|-----------|
 | **Silent misbehaviour against legacy peers** | Medium | Critical | • Extensive interoperability tests<br>• Protocol negotiation<br>• Explicit errors instead of silent fallback |
 | **Event loop integration bugs** | High | High | • Thorough testing with different loops<br>• Use established patterns (add_reader)<br>• Code review by asyncio experts |

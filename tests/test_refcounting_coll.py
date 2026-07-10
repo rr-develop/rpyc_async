@@ -8,7 +8,7 @@ Tests the new behavior where:
 """
 import unittest
 import logging
-from rpyc.lib.colls import RefCountingColl
+from rpyc_async.lib.colls import RefCountingColl
 
 
 class TestRefCountingCollBasics(unittest.TestCase):

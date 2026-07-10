@@ -21,8 +21,8 @@ import asyncio
 import gc
 import unittest
 
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 
 from tests.support import mp_asyncio_server
 

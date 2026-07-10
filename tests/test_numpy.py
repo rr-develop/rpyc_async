@@ -1,5 +1,5 @@
 from __future__ import with_statement
-import rpyc
+import rpyc_async as rpyc
 import unittest
 try:
     import numpy as np

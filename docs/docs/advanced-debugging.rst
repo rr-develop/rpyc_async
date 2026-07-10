@@ -21,11 +21,11 @@ Let's use `pyenv` to install Python versions under active development. Since dev
         printf "${PWD}\n" > "${site}/rpyc.pth"
     done
 
-Each `venv` contains a `.pth` file that appends `rpyc` to `sys.path`. We can run `rpyc_classic.py` using `pyenv` like so.
+Each `venv` contains a `.pth` file that appends `rpyc` to `sys.path`. We can run `bin/rpyc_async_classic.py` using `pyenv` like so.
 
 .. code-block:: bash
 
-    PYENV_VERSION=3.10-dev pyenv exec python ./bin/rpyc_classic.py --host 127.0.0.1
+    PYENV_VERSION=3.10-dev pyenv exec python ./bin/rpyc_async_classic.py --host 127.0.0.1
     PYENV_VERSION=3.9-dev pyenv exec python -c "import rpyc; conn = rpyc.utils.classic.connect('127.0.0.1'); conn.modules.sys.stderr.write('hello world\n')"
 
 Unit tests can be ran using your desired Python version as well.
@@ -51,13 +51,13 @@ The registry server can be started like so
 
 .. code-block:: bash
 
-    docker exec rpyc-3.8 /opt/rpyc/bin/rpyc_registry.py
+    docker exec rpyc-3.8 /opt/rpyc/bin/rpyc_async_registry.py
 
 The containers can then be used to test to your hearts desire
 
 .. code-block:: bash
 
-    docker exec rpyc-3.7 /opt/rpyc/bin/rpyc_classic.py --host 0.0.0.0 &
+    docker exec rpyc-3.7 /opt/rpyc/bin/rpyc_async_classic.py --host 0.0.0.0 &
     docker exec -it rpyc-3.10 python -c "import rpyc;conn = rpyc.utils.classic.connect('rpyc-3.7'); conn.modules.sys.stderr.write('hello world\n')"
 
 

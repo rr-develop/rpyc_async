@@ -1,7 +1,7 @@
 from __future__ import with_statement
-import rpyc
+import rpyc_async as rpyc
 import unittest
-from rpyc.lib.compat import is_py_gte37
+from rpyc_async.lib.compat import is_py_gte37
 if is_py_gte37:
     from dataclasses import dataclass
 

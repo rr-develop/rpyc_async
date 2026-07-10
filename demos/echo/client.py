@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import rpyc
+import rpyc_async as rpyc
 
 
 def echo_once():

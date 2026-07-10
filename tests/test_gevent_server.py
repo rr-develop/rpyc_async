@@ -1,8 +1,8 @@
 import unittest
-from rpyc import SlaveService
-from rpyc.utils.server import GeventServer
+from rpyc_async import SlaveService
+from rpyc_async.utils.server import GeventServer
 import time
-import rpyc
+import rpyc_async as rpyc
 try:
     import gevent
     _gevent_import_failed = False

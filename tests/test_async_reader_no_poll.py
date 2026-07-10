@@ -1,7 +1,7 @@
 """TDD: the asyncio reader is buffered + EVENT-DRIVEN — NO poll, NO busy-loop.
 
 DESIGN_NO_POLLING_ASYNCIO_READ.md §3. These are the regression tests for the
-99.9%-CPU incident (observed in a downstream application): a half-closed inbound socket
+99.9%-CPU incident (observed in a downstream application, 2026-05-27): a half-closed inbound socket
 made ``on_readable`` fire ~34 000×/sec with ZERO recv syscalls.
 
 NO MOCKS for the socket: every test drives ``enable_asyncio_serving`` against a
@@ -20,10 +20,10 @@ import socket
 import unittest
 from typing import Any
 
-from rpyc.core.channel import Channel
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
-from rpyc.core.stream import SocketStream
+from rpyc_async.core.channel import Channel
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
+from rpyc_async.core.stream import SocketStream
 
 
 def _frame(payload: bytes) -> bytes:

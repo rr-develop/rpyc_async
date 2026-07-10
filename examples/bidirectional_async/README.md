@@ -55,7 +55,7 @@ All examples use persistent event loops:
 
 **Server:**
 ```python
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 
 async def main():
     server = AsyncioServer(MyService, port=18861)
@@ -167,11 +167,11 @@ conn.enable_asyncio_serving()  # ← Required!
 **Solution:**
 ```python
 # ❌ Wrong
-from rpyc import ThreadedServer
+from rpyc_async import ThreadedServer
 server = ThreadedServer(MyService, port=18861)
 
 # ✅ Correct
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 server = AsyncioServer(MyService, port=18861)
 ```
 

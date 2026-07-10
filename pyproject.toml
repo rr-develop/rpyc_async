@@ -51,20 +51,18 @@ Homepage = "https://github.com/rr-develop/rpyc_async"
 Source = "https://github.com/rr-develop/rpyc_async"
 
 [project.scripts]
-rpyc_classic = "rpyc.cli.rpyc_classic:main"
-rpyc_registry = "rpyc.cli.rpyc_registry:main"
-"rpyc_classic.py" = "rpyc.cli.rpyc_classic:main"
-"rpyc_registry.py" = "rpyc.cli.rpyc_registry:main"
+rpyc-async-classic = "rpyc_async.cli.rpyc_classic:main"
+rpyc-async-registry = "rpyc_async.cli.rpyc_registry:main"
 
 [tool.hatch.version]
-path = "rpyc/version.py"
+path = "rpyc_async/version.py"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["rpyc"]
+only-include = ["rpyc_async"]
 
 
 [tool.hatch.build.targets.wheel]
-only-include = ["rpyc"]
+only-include = ["rpyc_async"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

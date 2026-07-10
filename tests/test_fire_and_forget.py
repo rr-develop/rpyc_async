@@ -84,7 +84,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_basic_success(self):
         """Test basic fire_and_forget with successful completion."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
 
@@ -106,7 +106,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_with_timeout_success(self):
         """Test fire_and_forget with timeout that doesn't expire."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
 
@@ -127,7 +127,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_with_timeout_expires(self):
         """Test fire_and_forget with timeout that expires."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
 
@@ -158,7 +158,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_with_exception(self):
         """Test fire_and_forget with worker that raises exception."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
 
@@ -179,7 +179,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_without_callbacks(self):
         """Test fire_and_forget without callbacks (should not crash)."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         task = fire_and_forget(fast_worker(10))
 
@@ -190,7 +190,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_task_cancellation(self):
         """Test that task can be cancelled."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
 
@@ -218,7 +218,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_task_name(self):
         """Test that task name is set correctly."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         task = fire_and_forget(
             fast_worker(10),
@@ -232,7 +232,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_multiple_concurrent_tasks(self):
         """Test multiple fire_and_forget tasks running concurrently."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
         tasks = []
@@ -255,7 +255,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_no_event_loop_error(self):
         """Test that fire_and_forget raises error when no event loop is running."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         # This test itself runs in event loop, so we need to test this differently
         # We'll verify the implementation uses get_running_loop() which will raise
@@ -265,7 +265,7 @@ class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_return_value_is_task(self):
         """Test that fire_and_forget returns an asyncio.Task."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         task = fire_and_forget(fast_worker(10))
 
@@ -279,7 +279,7 @@ class TestFireAndForgetAsync:
     @pytest.mark.asyncio
     async def test_basic_success(self):
         """Test basic fire_and_forget_async with successful completion."""
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         tracker = CallbackTracker()
 
@@ -299,7 +299,7 @@ class TestFireAndForgetAsync:
     @pytest.mark.asyncio
     async def test_with_timeout_success(self):
         """Test fire_and_forget_async with timeout that doesn't expire."""
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         tracker = CallbackTracker()
 
@@ -320,7 +320,7 @@ class TestFireAndForgetAsync:
     @pytest.mark.asyncio
     async def test_with_timeout_expires(self):
         """Test fire_and_forget_async with timeout that expires."""
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         tracker = CallbackTracker()
 
@@ -348,7 +348,7 @@ class TestFireAndForgetAsync:
     @pytest.mark.asyncio
     async def test_with_exception(self):
         """Test fire_and_forget_async with worker that raises exception."""
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         tracker = CallbackTracker()
 
@@ -368,7 +368,7 @@ class TestFireAndForgetAsync:
     @pytest.mark.asyncio
     async def test_async_callback_can_do_async_work(self):
         """Test that async callbacks can perform async operations."""
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         results = []
 
@@ -389,7 +389,7 @@ class TestFireAndForgetAsync:
     @pytest.mark.asyncio
     async def test_task_cancellation(self):
         """Test that task can be cancelled with async callbacks."""
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         tracker = CallbackTracker()
 
@@ -413,7 +413,7 @@ class TestFireAndForgetAsync:
     @pytest.mark.asyncio
     async def test_multiple_concurrent_tasks(self):
         """Test multiple fire_and_forget_async tasks running concurrently."""
-        from rpyc.utils.helpers import fire_and_forget_async
+        from rpyc_async.utils.helpers import fire_and_forget_async
 
         tracker = CallbackTracker()
         tasks = []
@@ -437,7 +437,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_none_timeout(self):
         """Test that None timeout means no timeout."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
 
@@ -454,7 +454,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_zero_timeout(self):
         """Test that zero timeout fires immediately."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         tracker = CallbackTracker()
 
@@ -472,7 +472,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_exception_in_success_callback(self, capsys):
         """Test that exception in success callback is logged but doesn't crash."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         def bad_callback(result):
             raise RuntimeError("Callback error")
@@ -492,7 +492,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_exception_in_error_callback(self, capsys):
         """Test that exception in error callback is logged but doesn't crash."""
-        from rpyc.utils.helpers import fire_and_forget
+        from rpyc_async.utils.helpers import fire_and_forget
 
         def bad_callback(exc):
             raise RuntimeError("Callback error")

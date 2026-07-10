@@ -19,8 +19,8 @@ each test now connects to a real AsyncioServer in a separate process
 import asyncio
 import unittest
 
-import rpyc
-from rpyc.core.protocol import Connection
+import rpyc_async as rpyc
+from rpyc_async.core.protocol import Connection
 
 from tests.support import mp_asyncio_server
 

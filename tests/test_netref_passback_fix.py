@@ -18,8 +18,8 @@ This test ensures the fix works correctly.
 """
 import unittest
 import asyncio
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 from multiprocessing import Process, Queue
 
 

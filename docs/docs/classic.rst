@@ -18,7 +18,7 @@ See also the :ref:`API reference <api-classic>`
 
 Usage
 -----
-RPyC installs ``rpyc_classic.py`` to your Python scripts directory (e.g., ``C:\PythonXX\Scripts``,
+RPyC installs ``rpyc-async-classic`` to your Python scripts directory (e.g., ``C:\PythonXX\Scripts``,
 ``/usr/local/bin``, etc.), which is a ready-to-run classic-mode server. It can be configured
 with :ref:`command-line parameters <classic-server>`. Once you have it running, you can connect
 to it like so ::

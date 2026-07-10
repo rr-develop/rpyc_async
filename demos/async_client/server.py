@@ -5,7 +5,7 @@ Additional context: https://github.com/tomerfiliba-org/rpyc/issues/491#issuecomm
 """
 import logging
 import time
-import rpyc
+import rpyc_async as rpyc
 import threading
 
 

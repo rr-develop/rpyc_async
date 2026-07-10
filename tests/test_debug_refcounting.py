@@ -26,8 +26,8 @@ import unittest
 from io import StringIO
 from typing import Any
 
-import rpyc
-from rpyc.core.async_connect import async_connect
+import rpyc_async as rpyc
+from rpyc_async.core.async_connect import async_connect
 from tests.support import mp_asyncio_server
 
 

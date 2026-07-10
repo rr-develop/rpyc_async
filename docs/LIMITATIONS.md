@@ -155,7 +155,7 @@ Main Event Loop (persistent)
 ```python
 # Server
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
+from rpyc_async.utils.async_server import AsyncioServer
 
 class ServerService(rpyc.Service):
     async def exposed_process(self, callback, value):
@@ -173,7 +173,7 @@ asyncio.run(main())
 ```python
 # Client
 import asyncio
-from rpyc.core.async_connect import async_connect
+from rpyc_async.core.async_connect import async_connect
 
 async def my_callback(x):
     await asyncio.sleep(0.1)
@@ -214,8 +214,8 @@ just bidirectional ones.
 **Status:** ✅ Fully functional
 
 ```python
-import rpyc
-from rpyc.utils.server import ThreadedServer
+import rpyc_async as rpyc
+from rpyc_async.utils.server import ThreadedServer
 
 class MyService(rpyc.Service):
     def exposed_double(self, x):
@@ -227,7 +227,7 @@ ThreadedServer(MyService, port=18861).start()
 A synchronous client talks to it the usual way:
 
 ```python
-import rpyc
+import rpyc_async as rpyc
 
 conn = rpyc.connect("localhost", 18861)
 try:
@@ -255,7 +255,7 @@ connection is torn down:
 
 ```text
 RuntimeError: Async method requires persistent event loop. Either:
-1. Use AsyncioServer for server-side: from rpyc.utils.async_server import AsyncioServer
+1. Use AsyncioServer for server-side: from rpyc_async.utils.async_server import AsyncioServer
 2. Enable asyncio serving for client-side: conn.enable_asyncio_serving()
 ```
 
@@ -273,8 +273,8 @@ concurrent calls, and mixing sync and async `exposed_*` in one service.
 
 ```python
 import asyncio
-from rpyc.utils.async_server import AsyncioServer
-from rpyc.core.async_connect import async_connect
+from rpyc_async.utils.async_server import AsyncioServer
+from rpyc_async.core.async_connect import async_connect
 
 class MixedService(rpyc.Service):
     def exposed_sync_method(self):
@@ -450,10 +450,10 @@ If you cannot migrate the server yet, keep every `exposed_*` method
 **See:** [AsyncioServer Migration Guide](ASYNCIO_SERVER_MIGRATION.md)
 
 **Key Changes:**
-1. Server: `from rpyc.utils.async_server import AsyncioServer`
+1. Server: `from rpyc_async.utils.async_server import AsyncioServer`
 2. Wrap in `async def main()`: `asyncio.run(main())`
 3. Use `await server.serve_forever()`
-4. Client: `from rpyc.core.async_connect import async_connect`, then
+4. Client: `from rpyc_async.core.async_connect import async_connect`, then
    `conn = await async_connect(...)` and `await conn.aclose()`
 5. Run the client in a **different OS process** from the server
 

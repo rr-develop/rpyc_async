@@ -1,4 +1,4 @@
-from rpyc.utils.server import ThreadedServer
+from rpyc_async.utils.server import ThreadedServer
 from rpyc_service import MyServiceFactory
 
 if __name__ == "__main__":

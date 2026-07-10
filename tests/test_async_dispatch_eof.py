@@ -1,6 +1,6 @@
 """Regression test: EOFError from _send inside _dispatch_request_async.
 
-Bug (seen in production): when the remote peer disconnects,
+Bug (seen in production on 2026-04-22): when the remote peer disconnects,
 any in-flight async handler that raises — or succeeds — reaches the final
 `self._send(MSG_ASYNC_{REPLY,EXCEPTION}, ...)` on a dead channel and
 EOFError propagates OUT of the coroutine. The coroutine was scheduled via
@@ -15,8 +15,8 @@ sync code — just stop trying to write to a dead pipe.
 """
 import unittest
 
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 class _ClosedChannel:
@@ -67,7 +67,7 @@ class TestAsyncDispatchEofRegression(unittest.IsolatedAsyncioTestCase):
         # Replace the async-call handler with a trivial async function
         # whose return value is brine-dumpable (so _box succeeds and we
         # reach the _send on the success branch).
-        from rpyc.core import consts
+        from rpyc_async.core import consts
 
         async def _noop_handler(self, *args, **kwargs):
             return None
@@ -91,7 +91,7 @@ class TestAsyncDispatchEofRegression(unittest.IsolatedAsyncioTestCase):
         `_send` inside `except:` fails. Coroutine must swallow it."""
         channel = _ClosedChannel()
         conn = _make_connection(self, channel)
-        from rpyc.core import consts
+        from rpyc_async.core import consts
 
         async def _raising_handler(self, *args, **kwargs):
             raise ValueError("deliberate handler failure")
@@ -117,7 +117,7 @@ class TestAsyncDispatchEofRegression(unittest.IsolatedAsyncioTestCase):
         Zero dispatches may raise."""
         channel = _ClosedChannel()
         conn = _make_connection(self, channel)
-        from rpyc.core import consts
+        from rpyc_async.core import consts
 
         async def _noop_handler(self, *args, **kwargs):
             return None

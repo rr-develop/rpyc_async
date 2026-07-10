@@ -28,7 +28,7 @@ is deterministic.
 import asyncio
 import unittest
 
-import rpyc
+import rpyc_async as rpyc
 
 from tests.support import mp_asyncio_server
 
@@ -62,7 +62,7 @@ class _EvictingService(rpyc.Service):
         Return the outcome as a brine-primitive tuple so the client
         can assert without any further netref dereferencing.
         """
-        from rpyc.core import consts
+        from rpyc_async.core import consts
 
         id_pack = self._stashed_id_pack
         if id_pack in self._conn._local_objects._dict:

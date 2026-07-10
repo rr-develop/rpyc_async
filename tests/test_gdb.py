@@ -1,11 +1,11 @@
 import pathlib
-import rpyc
+import rpyc_async as rpyc
 import subprocess
 import sys
 import tempfile
 import unittest
 import os
-from rpyc.utils.server import ThreadedServer
+from rpyc_async.utils.server import ThreadedServer
 from shutil import which
 
 

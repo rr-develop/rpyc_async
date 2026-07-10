@@ -25,11 +25,11 @@ import unittest
 from multiprocessing import Process, Queue
 from unittest.mock import Mock
 
-import rpyc
-from rpyc.core import consts
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.core import consts
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
+from rpyc_async.utils.async_server import AsyncioServer
 from tests.support import get_free_port
 
 
@@ -52,7 +52,7 @@ class TestRefCountingCollAddIncrementsSameObject(unittest.TestCase):
 
     def test_add_with_same_key_and_same_object_still_increments(self):
         """Legitimate reuse (same object boxed twice) must still incref."""
-        from rpyc.lib.colls import RefCountingColl
+        from rpyc_async.lib.colls import RefCountingColl
 
         coll = RefCountingColl()
         key = ("fake.cls", 11111, 22222)
@@ -219,7 +219,7 @@ class TestDebounceCoalescesBursts(unittest.IsolatedAsyncioTestCase):
 
 class TestDebounceDefaultConfigPresent(unittest.TestCase):
     def test_default_config_has_cleanup_debounce(self):
-        from rpyc.core.protocol import DEFAULT_CONFIG
+        from rpyc_async.core.protocol import DEFAULT_CONFIG
 
         self.assertIn(
             "cleanup_debounce",

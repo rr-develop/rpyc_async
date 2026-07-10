@@ -1,9 +1,9 @@
-import rpyc
+import rpyc_async as rpyc
 import sys
 import os
 import unittest
-from rpyc.utils.server import ThreadedServer
-from rpyc import SlaveService, MasterService
+from rpyc_async.utils.server import ThreadedServer
+from rpyc_async import SlaveService, MasterService
 
 
 try:

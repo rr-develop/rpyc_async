@@ -4,7 +4,7 @@ import logging
 # import gevent
 # from gevent import monkey
 # monkey.patch_all()
-import rpyc
+import rpyc_async as rpyc
 
 
 class EchoService(rpyc.Service):

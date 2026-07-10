@@ -1,6 +1,6 @@
-from rpyc.lib.compat import BYTES_LITERAL
-from rpyc.core.stream import PipeStream, NamedPipeStream
-import rpyc
+from rpyc_async.lib.compat import BYTES_LITERAL
+from rpyc_async.core.stream import PipeStream, NamedPipeStream
+import rpyc_async as rpyc
 import sys
 import time
 import unittest

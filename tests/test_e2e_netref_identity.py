@@ -36,8 +36,8 @@ Process 1 (Server):                    Process 2 (Client/Test):
 import unittest
 import asyncio
 import time
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 from multiprocessing import Process, Queue
 from tests.support import get_free_port
 

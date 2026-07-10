@@ -1,9 +1,9 @@
-import rpyc
+import rpyc_async as rpyc
 import os
 import unittest
-from rpyc.utils.authenticators import SSLAuthenticator
-from rpyc.utils.server import ThreadedServer
-from rpyc import SlaveService
+from rpyc_async.utils.authenticators import SSLAuthenticator
+from rpyc_async.utils.server import ThreadedServer
+from rpyc_async import SlaveService
 
 try:
     import ssl  # noqa

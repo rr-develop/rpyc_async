@@ -1,10 +1,10 @@
 """Regression tests for per-Connection inbound dispatch backpressure
 (quarantine on overload).
 
-Bug (production, a downstream application,
+Bug (production, downstream application, 2026-05-16,
 ~12.88 GB RSS in 73 min):
 
-    A malformed websocket client was caught in
+    A malformed websocket client (a downstream web front-end) was caught in
     a ``while True`` loop sending RPyC requests while ignoring its
     own callbacks. The rpyc agent kept accepting every MSG_REQUEST,
     spawning a dispatch task per request, each parked on
@@ -46,9 +46,9 @@ import gc
 import logging
 import unittest
 
-from rpyc.core import brine, consts, protocol
-from rpyc.core.protocol import Connection
-from rpyc.core.service import VoidService
+from rpyc_async.core import brine, consts, protocol
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core.service import VoidService
 
 
 # --------------------------------------------------------------------

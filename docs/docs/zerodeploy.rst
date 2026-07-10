@@ -36,7 +36,7 @@ Usage
 There's a lot of detail here, of course, but the good thing is you don't have to bend your head around it --
 it requires only two lines of code::
 
-    from rpyc.utils.zerodeploy import DeployedServer
+    from rpyc_async.utils.zerodeploy import DeployedServer
     from plumbum import SshMachine
 
     # create the deployment
@@ -87,7 +87,7 @@ MultiServerDeployment
 ---------------------
 If you need to deploy on a group of machines a cluster of machines, you can also use ``MultiServerDeployment``::
 
-    from rpyc.utils.zerodeploy import MultiServerDeployment
+    from rpyc_async.utils.zerodeploy import MultiServerDeployment
 
     m1 = SshMachine("host1")
     m2 = SshMachine("host2")

@@ -6,8 +6,8 @@ import sys
 
 from plumbum import SshMachine
 from plumbum.machines.paramiko_machine import ParamikoMachine
-from rpyc.utils.zerodeploy import DeployedServer
-from rpyc.core import DEFAULT_CONFIG
+from rpyc_async.utils.zerodeploy import DeployedServer
+from rpyc_async.core import DEFAULT_CONFIG
 try:
     import paramiko  # noqa
     _paramiko_import_failed = False

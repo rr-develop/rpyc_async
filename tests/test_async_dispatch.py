@@ -28,9 +28,9 @@ import asyncio
 import inspect
 import unittest
 
-import rpyc
-from rpyc.core.protocol import Connection
-from rpyc.core import consts
+import rpyc_async as rpyc
+from rpyc_async.core.protocol import Connection
+from rpyc_async.core import consts
 
 from tests.support import mp_asyncio_server
 

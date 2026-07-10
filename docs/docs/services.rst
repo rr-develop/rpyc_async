@@ -12,7 +12,7 @@ suffix), but you can override this behavior by specifying the ``ALIASES`` attrib
 Let's have a look at a rather basic service -- a calculator
 (see :ref:`custom-servers` for more info) ::
 
-    import rpyc
+    import rpyc_async as rpyc
 
     class CalculatorService(rpyc.Service):
         def exposed_add(self, a, b):
@@ -28,7 +28,7 @@ Let's have a look at a rather basic service -- a calculator
 
 When a client connects, it can access any of the exposed members of the service ::
 
-    import rpyc
+    import rpyc_async as rpyc
 
     conn = rpyc.connect("hostname", 12345)
     x = conn.root.add(4,7)
@@ -47,7 +47,7 @@ call it will result in an ``AttributeError``).
 Rather than having each method name start with ``exposed_``, you may prefer to use a
 decorator. Let's revisit the calculator service, but this time we'll use decorators. ::
 
-    import rpyc
+    import rpyc_async as rpyc
 
     @rpyc.service
     class CalculatorService(rpyc.Service):

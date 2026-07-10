@@ -8,7 +8,7 @@ import unittest
 import asyncio
 import inspect
 from functools import partial
-from rpyc.utils import helpers
+from rpyc_async.utils import helpers
 
 
 class TestAsyncDetection(unittest.TestCase):

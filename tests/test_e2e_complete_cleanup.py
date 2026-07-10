@@ -17,8 +17,8 @@ import gc
 import sys
 import io
 from contextlib import redirect_stderr
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 from multiprocessing import Process, Queue
 from tests.support import get_free_port
 

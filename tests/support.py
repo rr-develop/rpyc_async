@@ -170,7 +170,7 @@ def _mp_server_entrypoint(
     """
     # Imported inside the child so that the parent is not forced to import
     # heavy rpyc pieces just to start a server process.
-    from rpyc.utils.async_server import AsyncioServer
+    from rpyc_async.utils.async_server import AsyncioServer
 
     service_cls = service_factory()
 

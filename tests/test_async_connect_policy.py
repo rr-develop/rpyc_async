@@ -27,8 +27,8 @@ import unittest
 from multiprocessing import Process, Queue
 from unittest import mock
 
-import rpyc
-from rpyc.utils.async_server import AsyncioServer
+import rpyc_async as rpyc
+from rpyc_async.utils.async_server import AsyncioServer
 from tests.support import get_free_port
 
 
@@ -170,7 +170,7 @@ class TestSyncRequestGuard(_PolicyServerMixin, unittest.TestCase):
         are cheap localhost hops. See Connection.sync_request for the
         exact policy.
         """
-        from rpyc.core import consts
+        from rpyc_async.core import consts
 
         async def _go():
             conn = await rpyc.async_connect(
@@ -255,7 +255,7 @@ class TestAsyncClose(_PolicyServerMixin, unittest.TestCase):
 
 class TestDeadCodeRemoved(unittest.TestCase):
     def test_asyncio_stream_class_is_gone(self):
-        import rpyc.core.async_connect as ac
+        import rpyc_async.core.async_connect as ac
         self.assertFalse(
             hasattr(ac, "AsyncioStream"),
             "AsyncioStream is dead code: async_connect() uses SocketStream "

@@ -5,7 +5,7 @@ Tests verify that netrefs with ____is_async__ metadata
 use correct handlers (HANDLE_ASYNC_CALL vs HANDLE_CALL).
 """
 import unittest
-from rpyc.core import netref, consts
+from rpyc_async.core import netref, consts
 
 
 class TestNetrefAsync(unittest.TestCase):

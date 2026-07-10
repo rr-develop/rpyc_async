@@ -1,7 +1,7 @@
-import rpyc
+import rpyc_async as rpyc
 import copy
 import unittest
-from rpyc.utils.server import ThreadedServer
+from rpyc_async.utils.server import ThreadedServer
 
 
 class MyClass(object):
