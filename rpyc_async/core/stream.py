@@ -364,7 +364,7 @@ class TunneledSocketStream(SocketStream):
     __slots__ = ("tun",)
 
     def __init__(self, sock):
-        self.sock = sock
+        super().__init__(sock)
         self.tun = None
 
     def close(self):
