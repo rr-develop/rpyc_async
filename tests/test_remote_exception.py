@@ -3,10 +3,16 @@ import rpyc
 import unittest
 
 
+# A version whose *major* differs from ours, so that vinegar appends the
+# mismatch warning. Must not be derived from rpyc.version, or the test would
+# silently stop exercising the warning whenever our own major changes.
+MISMATCHED_VERSION = '0.0.0'
+
+
 class MyService(rpyc.Service):
 
     def exposed_set_version(self):
-        rpyc.version.__version__ = '1.0.0'
+        rpyc.version.__version__ = MISMATCHED_VERSION
 
     def exposed_remote_assert(self, val):
         assert val
@@ -27,7 +33,8 @@ class TestRemoteException(unittest.TestCase):
     def test_remote_exception(self):
         # Since the server/client share the same namespace, the version will change for both.
         # Even so, this should suffice for unit testing
-        warn_msg = 'WARNING: Remote is on RPyC 1.0.0 and local is on RPyC 1.0.0.'
+        warn_msg = 'WARNING: Remote is on RPyC {} and local is on RPyC {}.'.format(
+            MISMATCHED_VERSION, MISMATCHED_VERSION)
         try:
             self.conn.root.remote_assert(False)
         except Exception as exc:
@@ -47,7 +54,7 @@ class TestRemoteException(unittest.TestCase):
         else:
             exc_rpyc_version = None
             exc_remote_tb = ''
-        self.assertEqual('1.0.0', exc_rpyc_version)
+        self.assertEqual(MISMATCHED_VERSION, exc_rpyc_version)
         self.assertTrue(warn_msg in exc_remote_tb)
 
 
