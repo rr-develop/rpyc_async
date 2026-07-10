@@ -200,7 +200,7 @@ _connection_id_generator = itertools.count(1)
 # to the Task that ``run_coroutine_threadsafe`` schedules, a GC cycle
 # can collect that Task while it is still parked on an inner ``await``.
 #
-# Production failure mode (a downstream application, 12.1 GB
+# Production failure mode (2026-05-11 incident, 12.1 GB
 # RSS in 3 days):
 #
 #   1. Inbound MSG_REQUEST arrives. ``_dispatch`` schedules
@@ -221,14 +221,14 @@ _connection_id_generator = itertools.count(1)
 #      future. ``Connection._seq_request_callback`` (which would have
 #      popped the slot on reply) cannot resolve it because no reply
 #      will arrive (the peer is waiting for the inbound request that
-#      just died). The earlier cancel-aware fix in
+#      just died). The 2026-04-27 cancel-aware fix in
 #      ``AsyncResult.__await__`` cannot help because the future never
 #      reaches a done state (nobody calls set_result / set_exception /
 #      cancel on it). The AR stays pinned via a cycle that is held
 #      alive externally by the half-collected dispatch task's
 #      bookkeeping inside asyncio.
 #   5. Steady-state bidirectional traffic accumulates ~1 AR chain per
-#      lost dispatch task. The production process had
+#      lost dispatch task. The 2026-05-11 production process had
 #      1 941 735 leaked chains pinning ~10.7 GB of pymalloc heap.
 #
 # The fix:
@@ -243,24 +243,24 @@ _connection_id_generator = itertools.count(1)
 #
 # This guarantees the Task lives until its coroutine completes, which
 # in turn guarantees the surrounding outbound-AsyncResult chain runs
-# its own cleanup (``add_done_callback`` from an earlier fix, or
-# ``__del__`` from a later fix). The auto-discard makes sure
+# its own cleanup (``add_done_callback`` from the 2026-04-27 fix, or
+# ``__del__`` from the 2026-05-08 fix). The auto-discard makes sure
 # the set never grows beyond the natural working set of in-flight
 # inbound RPCs — no new unbounded-set failure mode is introduced.
 #
 # Companion fixes — the full leak-prevention picture, in chronological
 # order:
 #
-#   * ``AsyncResult.__await__`` cancel-aware cleanup
+#   * 2026-04-27 ``AsyncResult.__await__`` cancel-aware cleanup
 #     (commit c40fb00) — pops the seq when the *future* finishes.
 #     Catches the timeout / cancel case.
-#   * ``rpyc.utils.helpers._INFLIGHT`` (commit 079e80e) —
+#   * 2026-05-08 ``rpyc.utils.helpers._INFLIGHT`` (commit 079e80e) —
 #     same shape as this fix but for ``fire_and_forget_async`` (the
 #     outbound side). Catches the GC-of-pending-task case for any
 #     user-issued outbound RPC.
-#   * ``AsyncResult.__del__`` (same commit) — defence-in-
+#   * 2026-05-08 ``AsyncResult.__del__`` (same commit) — defence-in-
 #     depth that pops the seq when the AR itself is collected.
-#   * ``_DISPATCH_INFLIGHT`` (this set) — last known
+#   * 2026-05-11 ``_DISPATCH_INFLIGHT`` (this set) — last known
 #     instance of the discarded-Task pattern. Catches the
 #     GC-of-pending-dispatch-task case on the inbound side. With this
 #     in place, every Task that participates in an RPyC RPC chain
@@ -277,7 +277,7 @@ _connection_id_generator = itertools.count(1)
 #     a parked dispatch task is in it, a finished dispatch task is
 #     not.
 #   * tests/test_dispatch_task_leak_on_disconnect.py — the
-#     regression test that the same bug had been
+#     2026-04-25-era regression test that the same bug had been
 #     diagnosed at originally; this fix is what makes it green.
 #
 # Investigation report: a related internal incident analysis (not
@@ -309,16 +309,16 @@ _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 # strong reference holds either end. ``asyncio._all_tasks`` is a
 # ``WeakSet`` and does NOT provide one. So when the last
 # application-level reference to the Connection goes away — for
-# example when a downstream application's connection registry
+# example when an application's connection registry
 # evicts a torn-down connection through the ``is_connected``
-# liveness probe — the entire cycle becomes
+# liveness probe (2026-04-27 fix) — the entire cycle becomes
 # collectible. The cleanup_loop Task is destroyed while still
 # parked on ``await self._deletion_available.wait()``. asyncio
 # emits ``Task was destroyed but it is pending!`` and any
 # HANDLE_DEL entries still queued in ``self._pending_deletions``
 # are silently dropped → remote netrefs LEAK on the peer.
 #
-# Production failure: the log
+# Production failure (2026-05-13): the application log
 # captured the canonical signature:
 #
 #   asyncio - ERROR - Task was destroyed but it is pending!
@@ -327,7 +327,7 @@ _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 #                  running at rpyc/core/protocol.py:939>
 #          wait_for=<Future pending cb=[Task.task_wakeup()]>>
 #   WARNING: Failed to delete remote object
-#            ('...<remote service netref>', ...). Possible memory leak on
+#            ('...BoundService', ...). Possible memory leak on
 #            remote side.
 #
 # The fix has TWO halves and either half alone is broken:
@@ -435,7 +435,7 @@ class Connection(object):
         # (the receive-side shortcut in ``_unbox(LABEL_REMOTE_REF)``
         # then resolved peer id_packs to the receiver's own local,
         # producing infinite ping-pong callbacks — the 10 GB/6 min leak
-        # reported in production).
+        # reported on 2026-04-24).
         #
         # Starting the seq at ``(pid << 32) + 1`` makes two LIVE peers'
         # seq ranges disjoint by kernel guarantee: the kernel never
@@ -479,8 +479,8 @@ class Connection(object):
         # ``tb_frame``'s ``f_locals`` for the lifetime of the
         # Connection, which on a busy bidirectional-async
         # deployment cascades into a multi-GB AsyncResult retention
-        # leak — see
-        # a related internal incident analysis (not included here)
+        # leak — see a related internal incident analysis (not
+        # included here)
         # for the production failure and the regression tests in
         # ``tests/test_traceback_no_retention.py`` that guard this
         # invariant. If you find yourself reaching for
@@ -637,7 +637,7 @@ class Connection(object):
         The Connection is NOT closed. We keep the channel open and
         drain inbound bytes from the kernel buffer to /dev/null so
         the peer doesn't get TCP-level backpressure that might
-        make its bug even louder (the misbehaving client
+        make its bug even louder (the 2026-05-16 client
         would just log harder if we closed). open-and-ignore is
         the cheapest stable state.
 
@@ -720,8 +720,8 @@ class Connection(object):
         # there is no longer a peer to reply to them. ``cancel()``
         # propagates CancelledError into the parked handler, which
         # unwinds its await chain and lets the per-AsyncResult
-        # cleanup (the ``__await__`` cancel-aware fix /
-        # ``AsyncResult.__del__``) reclaim the chain.
+        # cleanup (2026-04-27 ``__await__`` cancel-aware fix /
+        # 2026-05-08 ``AsyncResult.__del__``) reclaim the chain.
         # Identification: each dispatch coroutine's frame has
         # ``self`` bound to THIS Connection. The actual per-conn
         # scan was extracted into ``_drain_inbound_dispatch`` so
@@ -948,8 +948,8 @@ class Connection(object):
         We swallow EVERY exception from ``remove_reader``, in particular
         uvloop's ``RuntimeError('File descriptor N is used by transport ...')``
         which is raised when the fd was already recycled by another transport.
-        Letting it escape would re-introduce the spin. See
-        a related internal incident analysis (not included here).
+        Letting it escape would re-introduce the spin. See a related
+        internal incident analysis (not included here).
         """
         loop = self._asyncio_loop
         fd = self._registered_fd
@@ -976,7 +976,7 @@ class Connection(object):
         ``self._closed`` — because a half-closed fd's reader must come off the
         loop even when a prior ``close()`` already ran and is now a no-op. A
         reader that outlives a no-op ``close()`` is exactly the live spin we
-        saw in production. See
+        saw in production (fd23, 2026-05-27). See
         docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
         ═══════════════════════════════════════════════════════════════════
         """
@@ -1098,8 +1098,9 @@ class Connection(object):
             Any of those re-introduce the 99.9%-CPU busy-loop: a half-closed
             socket (CLOSE-WAIT, pending EOF) is *permanently* readable to
             epoll, so re-asking the OS "is there more?" spins the core forever
-            (in production: 34k epoll wakeups/sec, ZERO recv syscalls).
-            The whole point of this rewrite is to NEVER ask.
+            (observed in production: 34k epoll wakeups/sec, ZERO recv
+            syscalls, 2026-05-27). The whole point of this rewrite is to
+            NEVER ask.
             See docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
 
             On EOF / hard error the reader removes ITSELF from the loop
@@ -1112,8 +1113,8 @@ class Connection(object):
             # means our reader leaked. Disarm by saved fd and return — do NOT
             # call recv on the foreign fd. The close hook should already have
             # unregistered us; this is the belt-and-braces guard so we can
-            # never spin even if the hook was bypassed. See
-            # a related internal incident analysis (not included here).
+            # never spin even if the hook was bypassed. See a related
+            # internal incident analysis (not included here).
             if self._closed or self._channel.closed:
                 self._unregister_reader()
                 return
@@ -1170,8 +1171,8 @@ class Connection(object):
         self._registered_fd = fd  # Save FD for cleanup
 
         # ═══════════════════════════════════════════════════════════════
-        # BIND THE READER'S LIFETIME TO THE SOCKET (FD-reuse spin fix).
-        # The socket layer and the reader registration used to
+        # BIND THE READER'S LIFETIME TO THE SOCKET (FD-reuse spin fix,
+        # 2026-05-27). The socket layer and the reader registration used to
         # live in separate layers with no link: ANY close path that bypassed
         # Connection._cleanup (a raw stream.close(), a dropped reference whose
         # __del__ never runs because the loop->callback->conn cycle pins it)
@@ -1211,8 +1212,8 @@ class Connection(object):
 
         # Single source of truth for taking the reader off the loop (idempotent,
         # swallows uvloop's 'fd used by transport' RuntimeError). See
-        # _unregister_reader / a related internal incident analysis (not
-        # included here).
+        # _unregister_reader and the related internal incident analysis
+        # (not included here).
         self._unregister_reader()
 
         # Clear the socket close hook so a later stream.close() does not call
@@ -1530,8 +1531,8 @@ class Connection(object):
         """
         # ═══════════════════════════════════════════════════════════════
         # Closed-connection fast-path — see
-        # docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md and
-        # a related internal incident analysis (not included here).
+        # docs/DESIGN_HANDLE_DEL_SUPPRESS_ON_CLOSED.md and a related
+        # internal incident analysis (not included here).
         #
         # If the peer is gone, HANDLE_DEL cannot succeed: every send
         # times out and the cleanup loop, called on every netref __del__
@@ -2324,8 +2325,8 @@ class Connection(object):
         ``Exception ignored in: <coroutine ...>`` on every subsequent
         dispatch. Under a hot retry loop (e.g. a periodic status-poll
         watcher) that produces hundreds of thousands of log lines and
-        unbounded memory growth. See a related internal incident
-        analysis (not included here).
+        unbounded memory growth. See a related internal incident analysis
+        (2026-04-22, not included here).
 
         ``args_factory`` is a zero-arg callable that produces the payload
         lazily — this lets us skip the potentially-expensive ``_box`` /
@@ -2413,7 +2414,7 @@ class Connection(object):
             # every in-flight dispatch task. If we hang on to those
             # tracebacks, EACH one pins its handler frame's locals
             # = a full AsyncResult chain = 50 KB+ leaked per
-            # cancelled request. The production incident
+            # cancelled request. The 2026-05-12 incident
             # accumulated 4 038 032 AR chains and 17.8 GB RSS this
             # way. See a related internal incident analysis (not
             # included here).
@@ -2472,7 +2473,8 @@ class Connection(object):
             # (peer disconnected), there is nothing to reply to — swallow
             # the I/O error and mark the connection closed. Letting it
             # escape here turns every subsequent dispatch into an
-            # unawaited-coroutine log storm (see a related internal incident).
+            # unawaited-coroutine log storm (see a related internal
+            # incident analysis, not included here).
             self._send_async_result_safe(
                 consts.MSG_ASYNC_EXCEPTION, seq, lambda boxed=boxed: boxed
             )
@@ -2506,10 +2508,10 @@ class Connection(object):
             # because a long-lived attribute holding a TracebackType
             # pins every frame's f_locals — which on a busy
             # connection means every AsyncResult the handler was
-            # awaiting on. The production incident
+            # awaiting on. The 2026-05-12 production incident
             # accumulated 4 M leaked AsyncResult chains and
-            # 17.8 GB RSS through this exact pattern; see
-            # a related internal incident analysis (not included here).
+            # 17.8 GB RSS through this exact pattern; see a related
+            # internal incident analysis (not included here).
             t, v, tb = sys.exc_info()
             logger = self._config["logger"]
             if logger and t is not StopIteration:
@@ -2525,7 +2527,7 @@ class Connection(object):
             del t, v, tb, boxed
         else:
             # ═════════════════════════════════════════════════════════════
-            # Late coroutine detection
+            # Late coroutine detection (2026-06-06 fix)
             # ═════════════════════════════════════════════════════════════
             # Some user-level exposed methods are ``async def``. When their
             # owning request comes in through a sync built-in handler —
@@ -2540,10 +2542,10 @@ class Connection(object):
             # silent drop) accompanied by the noisy
             # ``RuntimeWarning: Boxing coroutine object … Did you forget
             # to await?`` from this very line. This was the root cause of
-            # the WebSocket ``status_change`` events never firing in
-            # a downstream application (statuses froze for the operator).
+            # a downstream application's WebSocket ``status_change``
+            # events never firing (statuses froze in the UI).
             #
-            # Production trigger: a downstream application's service layer
+            # Production trigger: a service implementation that
             # notifies subscribers via
             # ``asyncreq(subscriber, HANDLE_CALLATTR, "on_message", ...)``.
             # ``HANDLE_CALLATTR``'s ``_HANDLERS`` entry is ``def``, so
@@ -2722,7 +2724,7 @@ class Connection(object):
                 #      mandatory).
                 #
                 # The OBVIOUSLY-WRONG way (used in the first cut of
-                # this fix, commit 0858bd3, caused a production
+                # this fix, commit 0858bd3, caused the 2026-05-11
                 # livelock) is to call
                 # ``asyncio.run_coroutine_threadsafe(...)`` and then,
                 # in a separate ``call_soon_threadsafe`` callback,
@@ -2768,10 +2770,11 @@ class Connection(object):
                 # Connection has crossed ``max_inbound_inflight``
                 # parked dispatch tasks, it enters terminal
                 # quarantine and we silently drop every further
-                # MSG_REQUEST on this channel. This protects an
-                # agent from a malformed client that keeps pumping
-                # requests while ignoring our callbacks (a production
-                # incident, 12.88 GB RSS in 73 min before manual kill).
+                # MSG_REQUEST on this channel. This protects a
+                # server from a malformed client that keeps pumping
+                # requests while ignoring our callbacks (2026-05-16
+                # incident, 12.88 GB RSS in 73 min before manual
+                # kill).
                 if self._inbound_quarantined:
                     return
                 _max_inflight = self._config.get("max_inbound_inflight", 0)
@@ -3219,13 +3222,25 @@ class Connection(object):
         """
         Asynchronously close this connection.
 
-        The synchronous ``close()`` calls ``sync_request(HANDLE_CLOSE)``
-        which blocks the loop — and, with the sync_request guard above,
-        would actually raise when called from the loop that serves this
-        connection. ``aclose()`` is the correct path from async code: it
-        drains pending netref deletions asynchronously, sends HANDLE_CLOSE
-        via ``async_request`` (awaitable, event-driven), and then runs
-        local cleanup.
+        Use this, never ``close()``, from async code.
+
+        ``close()`` does **not** raise here, even though ``sync_request``
+        carries a guard against being called from the serving loop: it
+        calls ``disable_asyncio_serving()`` one line earlier, which clears
+        ``_asyncio_enabled`` and therefore disarms that guard. What it does
+        instead is issue a blocking ``sync_request(HANDLE_CLOSE)`` and wait
+        for a reply that typically never arrives, freezing the event loop
+        until ``sync_request_timeout`` (30 s by default) expires. The
+        resulting ``TimeoutError`` is then swallowed by ``close()``'s own
+        ``except (EOFError, TimeoutError): pass``, so the freeze is silent.
+
+        Measured against a peer whose loop is busy, with
+        ``sync_request_timeout=3``: ``close()`` takes 3.00 s and lets zero
+        other coroutines run in the meantime; ``aclose()`` takes 0.00 s.
+
+        ``aclose()`` drains pending netref deletions asynchronously, sends
+        HANDLE_CLOSE via ``async_request`` (awaitable, event-driven) without
+        waiting for the reply, and then runs local cleanup.
 
         Safe to call multiple times. Never blocks the event loop.
         """
@@ -3329,7 +3344,8 @@ class Connection(object):
         # ═══════════════════════════════════════════════════════════════════════════
         # When obj is a netref, hasattr(obj, attr) triggers __getattribute__() which
         # makes a remote call back to the server. If the server's _check_attr() also
-        # uses hasattr(), this creates infinite recursion (see related issue in a downstream application).
+        # uses hasattr(), this creates infinite recursion (observed in a downstream
+        # application).
         #
         # Solution: For netref objects, only use hasattr_static() which doesn't trigger
         # __getattribute__(). This breaks the recursion cycle.

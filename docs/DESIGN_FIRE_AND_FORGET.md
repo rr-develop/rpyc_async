@@ -833,20 +833,25 @@ def fire_and_forget(...):
 
 **Problem:** Background tasks may be garbage collected if not referenced.
 
-**Mitigation:**
-- Return task from `fire_and_forget()` so user can hold reference
-- Document best practice of keeping task references
-- Optionally: Provide global task set (as in the reference fire-and-forget pattern)
+**Resolution (implemented):** the "optional enhancement" below was adopted, so
+the problem does not reach the caller. Both helpers register every task they
+create in a module-level `_INFLIGHT` set before returning it, and discard it
+from that set via `add_done_callback` once it settles. The task is therefore
+strongly referenced for exactly as long as it is running.
+
+Consequently the caller **must not** be told to hold the returned task in order
+to keep it alive — that advice was written against the pre-mitigation design and
+is obsolete. Hold the task only to `await` or `cancel()` it. See
+`rpyc/utils/helpers.py` (`_INFLIGHT`) and `guide_fire_and_forget.md`.
 
 ```python
-# Optional enhancement
-_background_tasks: set[asyncio.Task] = set()
+# Adopted; see rpyc/utils/helpers.py
+_INFLIGHT: set[asyncio.Task] = set()
 
-def fire_and_forget(..., track=True):
+def fire_and_forget(...):
     task = asyncio.create_task(...)
-    if track:
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+    _INFLIGHT.add(task)
+    task.add_done_callback(_INFLIGHT.discard)
     return task
 ```
 

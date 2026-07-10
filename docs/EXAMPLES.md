@@ -297,49 +297,130 @@ asyncio.run(main())
 ### Fire-and-Forget Calls
 
 Sometimes you want to start a remote call and move on without awaiting its
-result. `fire_and_forget()` schedules the awaitable on the running loop and
-hands you the `asyncio.Task`, optionally routing the outcome to callbacks.
+result. Both helpers schedule the awaitable on the running loop and hand you
+the `asyncio.Task`, routing the outcome to callbacks.
 
 > Import from `rpyc.utils.helpers` — these helpers are **not** re-exported at
 > the `rpyc` top level.
 
+| | callbacks | use when |
+|---|---|---|
+| `fire_and_forget_async()` | `async def` | almost always — anything that logs, alerts, or makes another RPC |
+| `fire_and_forget()` | plain `def` | the callback is pure CPU work and cannot `await` |
+
+**Reach for `fire_and_forget_async()` by default.** A sync callback cannot
+`await`, so it cannot do the one thing callbacks usually need to do: talk to
+something. If you find yourself calling `asyncio.create_task()` from inside a
+sync callback, you wanted `fire_and_forget_async()`.
+
+#### Keeping a caller off the hot path
+
+The motivating case: a server broadcasting to subscribers. One dead subscriber
+must not freeze the others, and must not freeze the caller.
+
+```python
+import asyncio
+import json
+import rpyc
+from rpyc.utils.helpers import fire_and_forget_async
+
+PUSH_TIMEOUT = 10.0
+
+class Hub(rpyc.Service):
+    def __init__(self):
+        self._subscribers = []
+
+    # `async def`, not `def`: an async client awaiting a *sync* exposed method
+    # goes through sync_request and hits the "called from the asyncio loop"
+    # guard. Every method an async client calls must be `async def`.
+    async def exposed_subscribe(self, subscriber):
+        self._subscribers.append(subscriber)
+
+    async def exposed_broadcast(self, message):
+        # Serialise ONCE, here. Handing the subscriber a netref would force
+        # its loop to walk the object back over the wire, field by field.
+        payload = json.dumps(message, default=str)
+
+        for subscriber in list(self._subscribers):
+            async def on_error(exc, sub=subscriber):
+                # An async callback can do real work — here, drop the peer.
+                await self._drop(sub, exc)
+
+            fire_and_forget_async(
+                subscriber.on_message(payload),
+                timeout=PUSH_TIMEOUT,
+                error_callback=on_error,
+                name=f"push-{id(subscriber)}",
+            )
+        # Returns immediately. A hung subscriber cannot block this call.
+
+    async def _drop(self, subscriber, exc):
+        if subscriber in self._subscribers:
+            self._subscribers.remove(subscriber)
+```
+
+Three things are load-bearing here:
+
+1. **The call returns immediately.** `exposed_broadcast` does not await any
+   subscriber, so one hung peer cannot stall the rest — or the caller.
+   Measured with one healthy and one permanently-hung subscriber:
+   `broadcast()` returns in 0.05 s, not in 3600 s.
+2. **`timeout=` is not optional.** Without it a subscriber whose `on_message`
+   never resolves parks its task *forever*, and every later broadcast adds
+   another. With it, each task settles and releases its slot — the hung peer
+   above raises `TimeoutError` into `on_error` and gets dropped.
+3. **`async def on_error`.** Dropping a dead subscriber may itself need to
+   `await`. `fire_and_forget()` could not express this.
+
+Two footguns this example sidesteps:
+
+- **Do not name an `exposed_` method after an attribute.** A `self.dropped`
+  list plus an `exposed_dropped()` method means `conn.root.dropped` resolves to
+  the *list* netref; calling it raises the `sync_request()` guard from async
+  code, with an error that points nowhere near the real cause.
+- **Serialise exactly once.** `exposed_broadcast` above already produced a
+  JSON string; a subscriber that calls `json.dumps()` on it again gets
+  `'"\\"msg\\""'`, not `'"msg"'`. Encode the original object on the sending
+  side and treat the payload as opaque thereafter.
+
+#### The basics
+
 ```python
 import asyncio
 import rpyc
-from rpyc.utils.helpers import fire_and_forget, fire_and_forget_async
+from rpyc.utils.helpers import fire_and_forget_async
 
-def on_success(result):
-    print("done:", result)
+async def on_success(result):
+    await log_to_db(result)
 
-def on_error(exc):
-    print("failed:", type(exc).__name__, exc)
+async def on_error(exc):
+    await alert(f"{type(exc).__name__}: {exc}")
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)
     try:
-        # 1. Start a call, keep going. Callbacks are plain functions.
-        fire_and_forget(
+        # 1. Start a call and keep going.
+        fire_and_forget_async(
             conn.root.slow_job(4),
             success_callback=on_success,
             error_callback=on_error,
             name="slow_job",
         )
 
-        # 2. Give up after 0.3 s — error_callback receives a TimeoutError.
-        fire_and_forget(
+        # 2. Give up after 0.3 s — on_error receives a TimeoutError.
+        fire_and_forget_async(
             conn.root.very_slow_job(),
             timeout=0.3,
             error_callback=on_error,
         )
 
-        # 3. The returned Task is a normal asyncio.Task: await or cancel it.
-        task = fire_and_forget(conn.root.slow_job(1))
+        # 3. The returned Task is a normal asyncio.Task: await it or cancel it.
+        task = fire_and_forget_async(conn.root.slow_job(1))
         await task
 
-        other = fire_and_forget(conn.root.very_slow_job())
+        other = fire_and_forget_async(conn.root.very_slow_job())
         other.cancel()  # CancelledError is NOT routed to error_callback
 
-        # Let the background work settle before closing the connection.
         await asyncio.sleep(1)
     finally:
         await conn.aclose()
@@ -347,41 +428,42 @@ async def main():
 asyncio.run(main())
 ```
 
-Use `fire_and_forget_async()` when the callbacks themselves need to `await`:
+Use `fire_and_forget()` only when the callbacks are plain functions:
 
 ```python
-async def on_success(result):
-    await log_to_db(result)
+from rpyc.utils.helpers import fire_and_forget
 
-async def on_error(exc):
-    await alert(exc)
+def on_success(result):
+    counters["done"] += 1     # pure CPU, no await needed
 
-fire_and_forget_async(
-    conn.root.slow_job(7),
-    success_callback=on_success,
-    error_callback=on_error,
-)
+fire_and_forget(conn.root.slow_job(7), success_callback=on_success)
 ```
 
 **Notes:**
 - Both helpers raise `RuntimeError` if no event loop is running.
+- **You do not need to hold the returned task.** Both helpers keep a strong
+  reference to it internally until it finishes, so a GC pass cannot silently
+  kill a half-finished call. Discarding the return value is safe; keep it only
+  if you intend to `await` or `cancel()` it.
 - The task resolves to **`None`**, never to the call's result. Awaiting it only
   tells you the work finished; to read the value you must pass a
   `success_callback`.
 - Awaiting the task does **not** re-raise a failure either. Without an
   `error_callback` the exception is logged as
-  `ERROR: Unhandled exception in fire_and_forget: ...` and swallowed. Pass an
-  `error_callback` if you care.
-- `error_callback` is invoked for any exception **except** `CancelledError`,
-  which propagates to whoever awaits the task.
-- **Do not close the connection while a fire-and-forget call is in flight.**
-  Its reply can no longer arrive, so the task never completes and *neither*
-  callback ever runs — it just hangs.
+  `ERROR: Unhandled exception in fire_and_forget_async: ...` and swallowed.
+- `error_callback` is invoked for `Exception` subclasses only. `CancelledError`
+  — and any other bare `BaseException` — bypasses it and propagates to whoever
+  awaits the task, despite the `BaseException` annotation.
+- An exception *inside* a callback is caught and printed to stderr; it never
+  kills the task, which still reports `done=True`, `exception()=None`.
+- **Do not close the connection while a call is in flight.** Its reply can no
+  longer arrive, so the task never completes and *neither* callback ever runs —
+  it just hangs.
 
 Await the tasks (or cancel them) before `await conn.aclose()`:
 
 ```python
-tasks = [fire_and_forget(conn.root.slow_job(i)) for i in range(5)]
+tasks = [fire_and_forget_async(conn.root.slow_job(i)) for i in range(5)]
 await asyncio.gather(*tasks, return_exceptions=True)
 await conn.aclose()
 ```

@@ -307,8 +307,12 @@ async def main():
 ```
 
 **Fire-and-forget:** to start a remote async call and not wait for it, use
-`fire_and_forget()` (sync callbacks) or `fire_and_forget_async()` (async
-callbacks). Both return an `asyncio.Task`; keep a reference to it.
+`fire_and_forget_async()` (async callbacks) or, when the callback cannot
+`await`, `fire_and_forget()` (sync callbacks). Both return an `asyncio.Task`
+that resolves to `None`, never to the call's result — read the value from
+`success_callback`. You do **not** need to keep a reference to the task: each
+helper pins it internally until it settles. Keep it only to `await` or
+`cancel()` it.
 
 ```python
 from rpyc.utils.helpers import fire_and_forget_async
@@ -324,8 +328,19 @@ task = fire_and_forget_async(
 )
 ```
 
-Both require a running event loop and an `AsyncioServer` peer. They are
-imported from `rpyc.utils.helpers`, not from the `rpyc` top level.
+Both require a running event loop, and are imported from `rpyc.utils.helpers`,
+not from the `rpyc` top level.
+
+The peer needs `AsyncioServer` only if the remote method is `async def`. A
+`ThreadedServer` exposing a plain `def` works too — wrap the netref so the call
+becomes an awaitable rather than a blocking `sync_request`:
+
+```python
+task = fire_and_forget_async(rpyc.async_(conn.root.sync_method)(arg), timeout=5.0)
+```
+
+Always pass `timeout=`: without it, a call whose reply never arrives leaves its
+task pinned for the lifetime of the process.
 
 ---
 

@@ -2,7 +2,19 @@
 
 ## Overview
 
-The `fire_and_forget()` and `fire_and_forget_async()` utilities allow you to execute async operations in the background without blocking, with proper timeout handling and optional callbacks.
+The `fire_and_forget_async()` and `fire_and_forget()` utilities allow you to execute async operations in the background without blocking, with proper timeout handling and optional callbacks.
+
+| | callbacks | use when |
+|---|---|---|
+| `fire_and_forget_async()` | `async def` | almost always — anything that logs, alerts, or makes another RPC |
+| `fire_and_forget()` | plain `def` | the callback is pure CPU work and cannot `await` |
+
+**Reach for `fire_and_forget_async()` by default.** A sync callback cannot
+`await`, so it cannot do the one thing callbacks usually need to do: talk to
+something. If you find yourself calling `asyncio.create_task()` from inside a
+sync callback, you wanted `fire_and_forget_async()`. The examples below use
+`fire_and_forget()` where the callback is trivial; swap in
+`fire_and_forget_async()` and `async def` callbacks as soon as it is not.
 
 **Key Features:**
 - Non-blocking execution of async operations
@@ -42,7 +54,8 @@ async def main():
     # Continue doing other work
     print("Task started in background")
 
-    # Optionally wait for completion
+    # Optionally wait for completion. `await task` yields None, never 20 -
+    # the result is delivered to success_callback.
     await task
 
 asyncio.run(main())
@@ -53,26 +66,34 @@ asyncio.run(main())
 ```python
 import asyncio
 from rpyc.core.async_connect import async_connect
-from rpyc.utils.helpers import fire_and_forget
+from rpyc.utils.helpers import fire_and_forget_async
+
+async def on_result(result):
+    await store(result)
+
+async def on_failure(exc):
+    await report(exc)
 
 async def main():
-    # Connect to AsyncioServer
+    # Connect to AsyncioServer. `exposed_long_running_task` must be `async def`;
+    # for a plain `def`, wrap it: rpyc.async_(conn.root.long_running_task)(...)
     conn = await async_connect("localhost", 18861)
 
-    # Fire and forget remote call
-    task = fire_and_forget(
+    # Fire and forget remote call - returns immediately
+    task = fire_and_forget_async(
         conn.root.long_running_task(arg1, arg2),
         timeout=30.0,
-        success_callback=lambda result: print(f"Result: {result}"),
-        error_callback=lambda exc: print(f"Failed: {exc}"),
+        success_callback=on_result,
+        error_callback=on_failure,
     )
 
     # Continue immediately
     print("RPC call started in background")
-
-    # Do other work...
     await asyncio.sleep(1)
 
+    # Settle the task first. Closing with a call in flight strands it: the reply
+    # can never arrive, so neither callback ever runs.
+    await asyncio.gather(task, return_exceptions=True)
     await conn.aclose()
 
 asyncio.run(main())
@@ -102,8 +123,11 @@ async def main():
         error_callback=on_error,
     )
 
-    await task  # Wait if needed
+    await task  # Wait if needed; the value is None, not the result
 ```
+
+The callbacks are awaited by the helper's own task, so they run on the same
+event loop and may make further RPC calls.
 
 ---
 
@@ -128,7 +152,10 @@ async def main():
     await task
 ```
 
-**Key Insight:** The timeout fires in your local event loop using `asyncio.wait_for()`. You don't need to wait for a hung remote process to respond.
+**Key Insight:** The timeout fires in your local event loop. You don't need to
+wait for a hung remote process to respond, and the task's slot is released when
+it fires. The exception delivered to `error_callback` is `TimeoutError` (in
+Python 3.11+ `asyncio.TimeoutError is TimeoutError`).
 
 ### No Timeout
 
@@ -142,11 +169,23 @@ task = fire_and_forget(
 )
 ```
 
+For a local coroutine that is fine. For an RPC it is a leak: if the peer never
+replies, the task never finishes, and the helper's internal registry keeps it
+alive for the lifetime of the process. Pass a `timeout=`.
+
 ---
 
-## Server Setup (AsyncioServer Required)
+## Server Setup
 
-**CRITICAL:** Cross-process async RPC requires `AsyncioServer`. ThreadedServer is **NOT** supported.
+`AsyncioServer` is required for `async def exposed_*` methods. Under
+`ThreadedServer` such a method raises
+`RuntimeError: Async method requires persistent event loop` in the handler
+thread, which kills the connection; the client then sees
+`EOFError: stream has been closed`.
+
+A `ThreadedServer` with ordinary `def exposed_*` methods still works with
+fire-and-forget — wrap the netref in `rpyc.async_()` (see Troubleshooting). Only
+`async def` on the server side needs `AsyncioServer`.
 
 ### Server Side
 
@@ -201,8 +240,8 @@ async def main():
         success_callback=lambda r: print(f"Task 2: {r}"),
     )
 
-    # Both tasks run concurrently
-    await asyncio.gather(task1, task2)
+    # Both tasks run concurrently. Settle them before closing.
+    await asyncio.gather(task1, task2, return_exceptions=True)
 
     await conn.aclose()
 
@@ -243,9 +282,12 @@ async def main():
         success_callback=lambda r: print(f"Final result: {r}"),
     )
 
-    await task
+    await task          # yields None
     await conn.aclose()
 ```
+
+Verified end to end: the callback prints `Final result: 35` (an `int`, not a
+netref), while `task.result()` is `None`.
 
 ---
 
@@ -253,17 +295,19 @@ async def main():
 
 ### 1. Always Provide Error Callbacks
 
-Without an error callback, exceptions are only logged to stderr:
+Without an error callback the exception is printed to stderr as
+`ERROR: Unhandled exception in fire_and_forget: …` and then swallowed. It is
+**not** re-raised by `await task`, so nothing downstream will notice.
 
 ```python
 # Good
-task = fire_and_forget(
+task = fire_and_forget_async(
     risky_operation(),
     error_callback=handle_error,
 )
 
-# Bad - errors only logged
-task = fire_and_forget(risky_operation())
+# Bad - the exception is printed and lost
+task = fire_and_forget_async(risky_operation())
 ```
 
 ### 2. Set Reasonable Timeouts for RPC
@@ -272,30 +316,32 @@ Always use timeouts for cross-process calls to prevent hanging:
 
 ```python
 # Good
-task = fire_and_forget(
+task = fire_and_forget_async(
     conn.root.remote_call(),
     timeout=10.0,  # Explicit timeout
     error_callback=handle_timeout,
 )
 
-# Risky - no timeout, may hang forever if connection dies
-task = fire_and_forget(conn.root.remote_call())
+# Risky - no timeout; if the peer never replies the task is pinned forever
+task = fire_and_forget_async(conn.root.remote_call())
 ```
 
 ### 3. Task Management
 
-Keep references to important tasks to prevent garbage collection:
+You do **not** need to keep a reference to stop the task being garbage
+collected — both helpers already pin it internally for its lifetime and release
+it on completion. Discarding the return value is safe.
+
+Keep the task only when you intend to `await` or `cancel()` it, and always
+settle outstanding tasks before closing the connection:
 
 ```python
-# Store tasks you care about
-active_tasks = set()
-
-task = fire_and_forget(...)
-active_tasks.add(task)
-task.add_done_callback(active_tasks.discard)
-
-# Wait for all tasks
-await asyncio.gather(*active_tasks, return_exceptions=True)
+tasks = [
+    fire_and_forget_async(conn.root.job(i), timeout=10)
+    for i in range(5)
+]
+await asyncio.gather(*tasks, return_exceptions=True)
+await conn.aclose()
 ```
 
 ### 4. Cancellation
@@ -303,14 +349,16 @@ await asyncio.gather(*active_tasks, return_exceptions=True)
 You can cancel fire-and-forget tasks:
 
 ```python
-task = fire_and_forget(long_running_task())
+task = fire_and_forget_async(long_running_task())
 
 # Later...
 if should_cancel:
     task.cancel()
 ```
 
-Note: Cancellation propagates `CancelledError`, which is **not** passed to error_callback.
+Note: cancellation propagates `CancelledError`, which is **not** passed to
+`error_callback`. Cancelling is the other way (besides `timeout=`) to release a
+task that is waiting on a reply that will never come.
 
 ---
 
@@ -322,37 +370,44 @@ Note: Cancellation propagates `CancelledError`, which is **not** passed to error
 async def main():
     conn = await async_connect("localhost", 18861)
 
-    tasks = []
-    for i in range(10):
-        task = fire_and_forget(
+    results = []
+    tasks = [
+        fire_and_forget(
             conn.root.process_item(i),
             timeout=5.0,
-            success_callback=lambda r: results.append(r),
+            success_callback=results.append,
         )
-        tasks.append(task)
+        for i in range(10)
+    ]
 
-    # Wait for all
-    await asyncio.gather(*tasks)
+    # Settle every task before closing; gather() yields Nones, not results.
+    await asyncio.gather(*tasks, return_exceptions=True)
+    print(results)
 
     await conn.aclose()
 ```
 
+`success_callback=results.append` is the one case where the sync helper is the
+right tool: the callback is pure CPU work and has nothing to `await`.
+
 ### Pattern 2: Fire and Continue
 
 ```python
+async def report_failure(exc):
+    await alert_service.send(f"Analytics failed: {exc}")
+
 async def main():
     conn = await async_connect("localhost", 18861)
 
-    # Start background task
-    fire_and_forget(
+    # Start background task. Discarding the Task is safe - the helper pins it.
+    fire_and_forget_async(
         conn.root.log_analytics(data),
         timeout=2.0,
-        error_callback=lambda exc: print(f"Analytics failed: {exc}"),
+        error_callback=report_failure,
     )
 
     # Continue immediately without waiting
-    result = await conn.root.get_user_data()
-    return result
+    return await conn.root.get_user_data()
 ```
 
 ### Pattern 3: With State Tracking
@@ -390,71 +445,87 @@ class RequestHandler:
 
 ### Error: "RuntimeError: no running event loop"
 
-**Cause:** Called `fire_and_forget()` outside of async context.
+**Cause:** Called `fire_and_forget()` or `fire_and_forget_async()` outside of an
+async context. Both need a running loop to schedule the task on.
 
 **Solution:** Ensure you're calling from within an async function:
 
 ```python
 # Wrong
 def sync_function():
-    task = fire_and_forget(...)  # Error!
+    task = fire_and_forget_async(...)  # RuntimeError: no running event loop
 
 # Correct
 async def async_function():
-    task = fire_and_forget(...)  # OK
+    task = fire_and_forget_async(...)  # OK
 ```
 
 ### Callbacks Not Firing
 
-**Cause:** Task might be garbage collected or connection closed.
+**Not the cause: garbage collection.** Both helpers keep a strong reference to
+the task internally until it finishes, and drop it the moment it does. You can
+discard the return value; the task still runs and its callbacks still fire.
 
-**Solution:** Keep reference to task and ensure connection stays alive:
+**The actual cause: the connection was closed while the call was in flight.**
+The reply can no longer arrive, so the task never completes and *neither*
+callback ever runs — verified: `task.done()` stays `False` and
+`task.cancelled()` stays `False`, forever.
 
-```python
-# Keep reference
-task = fire_and_forget(...)
-await task  # Wait for completion
-
-# Or store in set
-tasks = set()
-task = fire_and_forget(...)
-tasks.add(task)
-```
-
-### Timeouts Not Working
-
-**Cause:** Might be using ThreadedServer instead of AsyncioServer.
-
-**Solution:** Use AsyncioServer for all async functionality:
+**Solution:** settle the tasks before closing.
 
 ```python
-# Wrong
-from rpyc.utils.server import ThreadedServer
-server = ThreadedServer(...)  # Does not support async!
-
-# Correct
-from rpyc.utils.async_server import AsyncioServer
-server = AsyncioServer(...)  # Required for async
+tasks = [fire_and_forget_async(conn.root.job(i)) for i in range(5)]
+await asyncio.gather(*tasks, return_exceptions=True)
+await conn.aclose()
 ```
+
+If you never want to wait, give every call a `timeout=` so it cannot outlive
+the connection indefinitely.
+
+### Error: "sync_request() was called from the asyncio loop"
+
+**Cause:** The remote method is a plain `def`, so touching it produces a
+`HANDLE_CALL` round-trip *before* `fire_and_forget()` is ever reached. The
+argument is evaluated first, and evaluating it is what blows up:
+
+```python
+# Wrong - conn.root.slow(10) runs sync_request() right here
+task = fire_and_forget(conn.root.slow(10), timeout=2.0)
+```
+
+**Solution:** either make the remote method `async def`, or wrap the sync netref
+with `rpyc.async_()` so the call becomes an awaitable instead of a blocking
+request:
+
+```python
+# Remote method is `async def exposed_slow`
+task = fire_and_forget(conn.root.slow(10), timeout=2.0)
+
+# Remote method is a plain `def exposed_slow`
+task = fire_and_forget(rpyc.async_(conn.root.slow)(10), timeout=2.0)
+```
+
+Timeouts are enforced by the local event loop and work in both cases, including
+against a `ThreadedServer` whose handler is stuck in `time.sleep()` — verified:
+`fire_and_forget()` returns in `0.000s` and the `error_callback` receives
+`TimeoutError` after `2.0s`. `AsyncioServer` is required only for `async def`
+methods on the server, not for timeouts.
 
 ### Hung Connections
 
-**Symptom:** Fire-and-forget hangs forever despite timeout.
+**Symptom:** Fire-and-forget hangs forever despite the peer being gone.
 
-**Cause:** Connection not using asyncio serving.
+**Cause:** No `timeout=` was given, and the reply never arrives. The task then
+parks in the event loop indefinitely and the helper's internal registry grows
+with it.
 
-**Solution:** Use `async_connect()` which automatically enables asyncio serving:
+**Solution:** always pass `timeout=` for cross-process calls, or `cancel()` the
+task yourself. Either one releases the slot.
 
-```python
-from rpyc.core.async_connect import async_connect
-
-conn = await async_connect("localhost", 18861)  # auto-enables asyncio serving
-```
-
-`rpyc.connect()` is **not** an alternative here: it is synchronous and raises
-`RuntimeError` when called from a running event loop. `enable_asyncio_serving()`
-is only for connections you built by hand from a channel/stream — `async_connect()`
-and `AsyncioServer` already call it for you.
+Note that `enable_asyncio_serving()` is only for connections you built by hand
+from a channel/stream — `async_connect()` and `AsyncioServer` already call it
+for you. `rpyc.connect()` is not an alternative to `async_connect()`: it is
+synchronous and raises `RuntimeError` when called from a running event loop.
 
 Close the connection with `await conn.aclose()`. The synchronous `conn.close()`
 issues a **blocking** `sync_request(HANDLE_CLOSE)` and waits for a reply that,
@@ -476,7 +547,8 @@ Fire-and-forget has minimal overhead:
 
 ### Concurrency
 
-You can safely fire thousands of concurrent tasks:
+You can safely fire thousands of concurrent tasks — 10 000 was measured without
+trouble:
 
 ```python
 tasks = [
@@ -486,14 +558,18 @@ tasks = [
 await asyncio.gather(*tasks)
 ```
 
-The event loop handles scheduling efficiently.
+Remember that `await task` yields `None`, never the call's result, so
+`asyncio.gather()` here only tells you the tasks have settled. Results arrive
+through `success_callback`.
 
 ### Memory
 
-Each task consumes minimal memory (~1KB). Remember to:
-- Set timeouts to prevent indefinite accumulation
-- Remove references to completed tasks
-- Use `add_done_callback` for automatic cleanup
+Each task costs roughly 1 KB (measured with `tracemalloc`: ~1032 bytes per task
+over 10 000 tasks). The helpers drop their internal reference as soon as a task
+finishes, so completed tasks are collected without any action from you.
+
+The one thing to remember: **set `timeout=`**. A call whose reply never arrives
+never finishes, so its task is pinned for the lifetime of the process.
 
 ---
 
@@ -518,11 +594,11 @@ Execute an awaitable in the background with sync callbacks.
 - `awaitable`: Coroutine or AsyncResult to execute
 - `timeout`: Optional timeout in seconds (None = no timeout)
 - `success_callback`: Synchronous function called with result on success
-- `error_callback`: Synchronous function called with exception on error (except CancelledError)
+- `error_callback`: Synchronous function called with the exception on error
 - `name`: Optional task name for debugging
 
 **Returns:**
-- `asyncio.Task` that can be awaited or cancelled
+- `asyncio.Task` that resolves to `None` — never to the awaitable's result
 
 **Raises:**
 - `RuntimeError`: If no event loop is running
@@ -546,31 +622,50 @@ Execute an awaitable in the background with async callbacks.
 - `awaitable`: Coroutine or AsyncResult to execute
 - `timeout`: Optional timeout in seconds (None = no timeout)
 - `success_callback`: Async function called with result on success
-- `error_callback`: Async function called with exception on error (except CancelledError)
+- `error_callback`: Async function called with the exception on error
 - `name`: Optional task name for debugging
 
 **Returns:**
-- `asyncio.Task` that can be awaited or cancelled
+- `asyncio.Task` that resolves to `None` — never to the awaitable's result
 
 **Raises:**
 - `RuntimeError`: If no event loop is running
+
+### Callback semantics (both helpers)
+
+- `error_callback` is invoked for `Exception` subclasses only. A bare
+  `BaseException` such as `KeyboardInterrupt` bypasses it and propagates out of
+  the task, despite the `BaseException` annotation. `CancelledError` likewise
+  bypasses it and propagates to whoever awaits the task.
+- Without an `error_callback` the exception is printed as
+  `ERROR: Unhandled exception in fire_and_forget[_async]: <exc>` and swallowed.
+  `await task` does **not** re-raise it.
+- An exception raised *inside* a callback is caught and printed as
+  `ERROR: Exception in fire_and_forget[_async] {success,error}_callback: <exc>`.
+  The task still completes successfully — verified: `task.done()` is `True` and
+  `task.exception()` is `None`.
+- Each helper keeps the task in an internal set for its lifetime and removes it
+  via `add_done_callback` on completion. You never need to hold a reference to
+  keep it alive.
 
 ---
 
 ## Summary
 
-Fire-and-forget utilities provide a clean, reliable way to execute async operations in the background:
+Fire-and-forget utilities provide a clean way to execute async operations in the
+background:
 
-✅ **Non-blocking** - Returns immediately
-✅ **Timeout support** - Local enforcement, no hanging
-✅ **Cross-process RPC** - Works with async RPC calls
-✅ **Bidirectional async** - Server can call client callbacks
-✅ **Error handling** - Optional success/error callbacks
-✅ **Single event loop** - No additional threads or loops
-✅ **Production ready** - Comprehensive test coverage
+- **Non-blocking** — returns immediately
+- **Timeout support** — enforced by the local event loop, so a hung peer cannot hang you
+- **Cross-process RPC** — works with async RPC calls
+- **Error handling** — optional success/error callbacks
+- **Single event loop** — no additional threads or loops
 
 **Remember:**
-- Always use `AsyncioServer` for async RPC
-- Set timeouts for cross-process calls
-- Provide error callbacks for production code
-- Keep task references to prevent garbage collection
+- Prefer `fire_and_forget_async()`; use `fire_and_forget()` only when the callback cannot `await`
+- `AsyncioServer` is required for `async def` remote methods; wrap plain `def` ones in `rpyc.async_()`
+- Set a `timeout=` on every cross-process call
+- Provide an error callback — without one, exceptions are printed to stderr and swallowed
+- `await task` yields `None`; results come from `success_callback`
+- Do **not** keep a reference just to defeat the garbage collector — the helpers already pin the task
+- Settle in-flight tasks before `await conn.aclose()`, or they never complete
