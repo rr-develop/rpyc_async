@@ -1,6 +1,6 @@
 # rpyc-async — Final Analysis Report
 
-**Product:** `rpyc-async` 1.0.0 (asyncio-native fork of upstream RPyC; import name `rpyc`)
+**Product:** `rpyc-async` 1.0.0 (asyncio-native fork of upstream RPyC; import name `rpyc_async`)
 
 ## Executive Summary
 
@@ -392,7 +392,7 @@ result = await conn.root.process(my_callback, 5)
 - ✅ Comprehensive tests
 
 **Deployment:**
-1. Install `rpyc-async` 1.0.0 (`pip install rpyc-async`; import name stays `rpyc`)
+1. Install `rpyc-async` 1.0.0 (`pip install rpyc-async`; import name is `rpyc_async` — alias with `import rpyc_async as rpyc` to keep the shorter spelling)
 2. Migrate I/O-bound methods to async
 3. Use patterns from docs/EXAMPLES.md
 4. Follow docs/MIGRATION_GUIDE.md

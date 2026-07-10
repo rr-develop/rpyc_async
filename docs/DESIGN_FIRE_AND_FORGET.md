@@ -1,7 +1,7 @@
 # Design Document: fire_and_forget() Utilities for rpyc-async
 
 **Document Version:** 1.1
-**Target:** `rpyc-async` 1.0.0 (distribution `rpyc-async`, import name `rpyc`)
+**Target:** `rpyc-async` 1.0.0 (distribution `rpyc-async`, import name `rpyc_async`)
 **Date:** 2026-04-06
 **Status:** Implementation Phase
 
@@ -934,7 +934,7 @@ def _check_asyncio_enabled(awaitable):
 
 ### 11.2 rpyc-async Versions
 
-- Requires `rpyc-async` 1.0.0+ (asyncio-native; import name remains `rpyc`)
+- Requires `rpyc-async` 1.0.0+ (asyncio-native; import name is `rpyc_async` — use `import rpyc_async as rpyc` if you want to keep the shorter spelling in existing code)
 - Uses existing `AsyncResult`, `enable_asyncio_serving()`, etc.
 - Compatibility with classic synchronous RPyC (upstream RPyC) is not guaranteed
 

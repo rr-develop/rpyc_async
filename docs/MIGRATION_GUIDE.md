@@ -627,9 +627,10 @@ pip uninstall rpyc-async
 pip install rpyc
 ```
 
-Because both distributions expose the same `rpyc` import name, install only one of them per
-environment. To ease the transition, keep the synchronous method variants until every call
-site has been migrated, and test both paths in isolated environments before removing them.
+The fork's import name is `rpyc_async` and upstream's is `rpyc`, so the two distributions can
+be installed side by side if you need both APIs in the same environment. To ease the
+transition, keep the synchronous method variants until every call site has been migrated,
+and test both paths in isolated environments before removing them.
 
 ---
 

@@ -4,7 +4,7 @@
 
 `rpyc-async` 1.0.0 (asyncio-native fork of upstream RPyC) provides async/await support with the following status:
 
-> **Note:** `rpyc-async` is an independent distribution (`pip install rpyc-async`, import name `rpyc`).
+> **Note:** `rpyc-async` is an independent distribution (`pip install rpyc-async`, import name `rpyc_async`; use `import rpyc_async as rpyc` to keep the shorter spelling in existing code).
 > Backward compatibility with classic synchronous RPyC is **not** guaranteed.
 
 **✅ Fully Supported:**

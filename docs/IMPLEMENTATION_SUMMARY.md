@@ -4,7 +4,7 @@
 
 **Goal:** Provide native async/await support in `rpyc-async`, an asyncio-native fork of RPyC (Remote Python Call), forked from upstream RPyC 6.0.1.
 
-**Distribution:** `rpyc-async` (import name remains `rpyc`)
+**Distribution:** `rpyc-async` (import name is `rpyc_async`; use `import rpyc_async as rpyc` to keep the shorter spelling in existing code)
 
 **Version:** 1.0.0
 
@@ -423,7 +423,7 @@ All phases completed according to design:
 
 ## Contact & Support
 
-- **Distribution:** `rpyc-async` (import name: `rpyc`)
+- **Distribution:** `rpyc-async` (import name: `rpyc_async`; alias with `import rpyc_async as rpyc` to keep the shorter spelling)
 - **Documentation:** `docs/`
 - **Tests:** `tests/`
 
