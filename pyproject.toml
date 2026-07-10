@@ -69,5 +69,4 @@ testpaths = ["tests"]
 
 [tool.codespell]
 skip = '.git,*.pdf,*.svg'
-#
-# ignore-words-list = ''
+ignore-words-list = 'asend,disjointness'
