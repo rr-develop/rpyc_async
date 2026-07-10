@@ -91,8 +91,6 @@ def run_netref_identity_server(port, ready_queue):
                     - new_id: id() of new netref
                     - result: Result from calling client method
             """
-            nonlocal stored_netref
-
             if stored_netref is None:
                 raise RuntimeError("No netref stored yet! Call store_and_call first")
 

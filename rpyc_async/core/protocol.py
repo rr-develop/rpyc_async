@@ -13,7 +13,7 @@ import threading
 import asyncio
 import weakref
 from queue import Queue
-from typing import Optional, Tuple, Any, Dict
+from typing import List, Optional, Tuple, Any, Dict
 
 from threading import Lock, Condition, RLock
 from rpyc_async.lib import spawn, Timeout, get_methods, get_id_pack, hasattr_static
