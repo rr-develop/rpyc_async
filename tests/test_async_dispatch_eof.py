@@ -20,9 +20,9 @@ from rpyc_async.core.service import VoidService
 
 
 class _ClosedChannel:
-    """Minimal channel stub that mimics rpyc.core.channel.Channel but
+    """Minimal channel stub that mimics rpyc_async.core.channel.Channel but
     raises EOFError on every send — the shape a real channel takes on
-    once its underlying stream is closed (see rpyc/core/stream.py:96)."""
+    once its underlying stream is closed (see rpyc_async/core/stream.py:96)."""
 
     def __init__(self):
         self.closed = False

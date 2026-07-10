@@ -200,7 +200,7 @@ _connection_id_generator = itertools.count(1)
 # to the Task that ``run_coroutine_threadsafe`` schedules, a GC cycle
 # can collect that Task while it is still parked on an inner ``await``.
 #
-# Production failure mode (observed in a downstream application, 12.1 GB
+# Production failure mode (observed in a downstream service, 12.1 GB
 # RSS in 3 days):
 #
 #   1. Inbound MSG_REQUEST arrives. ``_dispatch`` schedules
@@ -254,7 +254,7 @@ _connection_id_generator = itertools.count(1)
 #   * 2026-04-27 ``AsyncResult.__await__`` cancel-aware cleanup
 #     (commit c40fb00) — pops the seq when the *future* finishes.
 #     Catches the timeout / cancel case.
-#   * 2026-05-08 ``rpyc.utils.helpers._INFLIGHT`` (commit 079e80e) —
+#   * 2026-05-08 ``rpyc_async.utils.helpers._INFLIGHT`` (commit 079e80e) —
 #     same shape as this fix but for ``fire_and_forget_async`` (the
 #     outbound side). Catches the GC-of-pending-task case for any
 #     user-issued outbound RPC.
@@ -280,7 +280,8 @@ _connection_id_generator = itertools.count(1)
 #     2026-04-25-era regression test that the same bug had been
 #     diagnosed at originally; this fix is what makes it green.
 #
-# Investigation report: a related internal incident analysis (not included here).
+# Investigation report:
+# a related internal incident analysis (not included here).
 _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 
 
@@ -308,7 +309,7 @@ _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 # strong reference holds either end. ``asyncio._all_tasks`` is a
 # ``WeakSet`` and does NOT provide one. So when the last
 # application-level reference to the Connection goes away — for
-# example when a downstream application's connection registry
+# example when a downstream service's connection registry
 # evicts a torn-down connection through the ``is_connected``
 # liveness probe (2026-04-27 fix) — the entire cycle becomes
 # collectible. The cleanup_loop Task is destroyed while still
@@ -317,8 +318,8 @@ _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 # HANDLE_DEL entries still queued in ``self._pending_deletions``
 # are silently dropped → remote netrefs LEAK on the peer.
 #
-# Production failure (downstream application, 2026-05-13): the log
-# captured the canonical signature:
+# Production failure (observed in a downstream service, 2026-05-13):
+# the log captured the canonical signature:
 #
 #   asyncio - ERROR - Task was destroyed but it is pending!
 #   task: <Task pending name='Task-3309'
@@ -356,8 +357,8 @@ _DISPATCH_INFLIGHT: "set[asyncio.Task]" = set()
 #
 # Regression tests: ``tests/test_cleanup_loop_pin.py``.
 # DO NOT remove ``_CLEANUP_LOOPS`` and DO NOT change cleanup_loop
-# to close over ``self`` directly — see a related internal incident
-# analysis (not included here).
+# to close over ``self`` directly — see
+# a related internal incident analysis (not included here).
 _CLEANUP_LOOPS: "set[asyncio.Task]" = set()
 
 
@@ -369,8 +370,8 @@ class Connection(object):
     controlled by a different address space. Since garbage collection is handled on the remote end, a weak reference
     is used for netrefs.
 
-    :param root: the :class:`~rpyc.core.service.Service` object to expose
-    :param channel: the :class:`~rpyc.core.channel.Channel` over which messages are passed
+    :param root: the :class:`~rpyc_async.core.service.Service` object to expose
+    :param channel: the :class:`~rpyc_async.core.channel.Channel` over which messages are passed
     :param config: the connection's configuration dict (overriding parameters
                    from the :data:`default configuration <DEFAULT_CONFIG>`)
     """
@@ -472,7 +473,7 @@ class Connection(object):
             file=sys.stderr
         )
         # ``_last_traceback`` is kept as an attribute for binary-
-        # compatibility with ``rpyc.utils.classic.pdb_post_mortem``,
+        # compatibility with ``rpyc_async.utils.classic.pdb_post_mortem``,
         # which reads it across an RPC. PRODUCTION CODE MUST NEVER
         # WRITE TO IT. Storing a live TracebackType here pins every
         # ``tb_frame``'s ``f_locals`` for the lifetime of the
@@ -636,7 +637,7 @@ class Connection(object):
         The Connection is NOT closed. We keep the channel open and
         drain inbound bytes from the kernel buffer to /dev/null so
         the peer doesn't get TCP-level backpressure that might
-        make its bug even louder (one observed client
+        make its bug even louder (the 2026-05-16 client
         would just log harder if we closed). open-and-ignore is
         the cheapest stable state.
 
@@ -975,7 +976,7 @@ class Connection(object):
         ``self._closed`` — because a half-closed fd's reader must come off the
         loop even when a prior ``close()`` already ran and is now a no-op. A
         reader that outlives a no-op ``close()`` is exactly the live spin we
-        saw in a downstream application (2026-05-27). See
+        saw in production (2026-05-27). See
         docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
         ═══════════════════════════════════════════════════════════════════
         """
@@ -1097,7 +1098,7 @@ class Connection(object):
             Any of those re-introduce the 99.9%-CPU busy-loop: a half-closed
             socket (CLOSE-WAIT, pending EOF) is *permanently* readable to
             epoll, so re-asking the OS "is there more?" spins the core forever
-            (observed downstream: 34k epoll wakeups/sec, ZERO recv syscalls,
+            (observed in production: 34k epoll wakeups/sec, ZERO recv syscalls,
             2026-05-27). The whole point of this rewrite is to NEVER ask.
             See docs/DESIGN_NO_POLLING_ASYNCIO_READ.md.
 
@@ -1210,7 +1211,7 @@ class Connection(object):
 
         # Single source of truth for taking the reader off the loop (idempotent,
         # swallows uvloop's 'fd used by transport' RuntimeError). See
-        # _unregister_reader / a related internal incident analysis
+        # _unregister_reader and a related internal incident analysis
         # (not included here).
         self._unregister_reader()
 
@@ -1839,7 +1840,7 @@ class Connection(object):
         ``_alloc_stable_obj_id`` instead of ``id(obj)``, eliminating
         the CPython ``id()`` reuse race at its source.
 
-        Name-pack and type-id computation mirror ``rpyc.lib.get_id_pack``
+        Name-pack and type-id computation mirror ``rpyc_async.lib.get_id_pack``
         so the rest of the stack (netref class factory, `_handle_inspect`)
         sees exactly the shape it expects.
         """
@@ -2414,8 +2415,8 @@ class Connection(object):
             # = a full AsyncResult chain = 50 KB+ leaked per
             # cancelled request. The 2026-05-12 incident
             # accumulated 4 038 032 AR chains and 17.8 GB RSS this
-            # way. See a related internal incident analysis (not
-            # included here).
+            # way. See a related internal incident analysis
+            # (not included here).
             #
             # The fix:
             #   1. Eagerly box the exception NOW, while ``tb`` is
@@ -2429,7 +2430,7 @@ class Connection(object):
             #      ever outlives this frame.
             #   3. Do not store ``tb`` on ``self`` under any name.
             #      The legacy ``self._last_traceback`` was used by
-            #      ``rpyc.utils.classic.pdb_post_mortem`` — a
+            #      ``rpyc_async.utils.classic.pdb_post_mortem`` — a
             #      developer-debug path that has no business
             #      shipping in production. If post-mortem ever
             #      needs to come back, it should grab the
@@ -2507,8 +2508,8 @@ class Connection(object):
             # connection means every AsyncResult the handler was
             # awaiting on. The 2026-05-12 production incident
             # accumulated 4 M leaked AsyncResult chains and
-            # 17.8 GB RSS through this exact pattern; see a related
-            # internal incident analysis (not included here).
+            # 17.8 GB RSS through this exact pattern; see
+            # a related internal incident analysis (not included here).
             t, v, tb = sys.exc_info()
             logger = self._config["logger"]
             if logger and t is not StopIteration:
@@ -2540,10 +2541,10 @@ class Connection(object):
             # ``RuntimeWarning: Boxing coroutine object … Did you forget
             # to await?`` from this very line. This was the root cause of
             # the WebSocket ``status_change`` events never firing in
-            # a downstream application (statuses froze for the operator).
+            # a downstream service (statuses froze for the operator).
             #
-            # Production trigger: a downstream client's service module
-            # notifies subscribers via
+            # Production trigger: a downstream client's
+            # ``rpyc_service/agent_service.py`` notifies subscribers via
             # ``asyncreq(subscriber, HANDLE_CALLATTR, "on_message", ...)``.
             # ``HANDLE_CALLATTR``'s ``_HANDLERS`` entry is ``def``, so
             # ``_is_async_handler`` returns False and dispatch arrives
@@ -3294,7 +3295,7 @@ class Connection(object):
     def async_request(self, handler, *args, **kwargs):  # serving
         """Send an asynchronous request (does not wait for it to finish)
 
-        :returns: an :class:`rpyc.core.async_.AsyncResult` object, which will
+        :returns: an :class:`rpyc_async.core.async_.AsyncResult` object, which will
                   eventually hold the result (or exception)
         """
         timeout = kwargs.pop("timeout", None)
@@ -3340,7 +3341,7 @@ class Connection(object):
         # ═══════════════════════════════════════════════════════════════════════════
         # When obj is a netref, hasattr(obj, attr) triggers __getattribute__() which
         # makes a remote call back to the server. If the server's _check_attr() also
-        # uses hasattr(), this creates infinite recursion (see a related internal issue).
+        # uses hasattr(), this creates infinite recursion (see related internal issue).
         #
         # Solution: For netref objects, only use hasattr_static() which doesn't trigger
         # __getattribute__(). This breaks the recursion cycle.

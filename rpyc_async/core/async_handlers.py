@@ -121,7 +121,7 @@ async def _handle_async_call(
     #
     # Why ``____id_pack__`` as the probe:
     # It's present on every netref (set in ``__init__``, see
-    # ``rpyc/core/netref.py``) and absent on every non-netref Python
+    # ``rpyc_async/core/netref.py``) and absent on every non-netref Python
     # object. A fresh local coroutine function / bound method / user
     # callable never has it. So ``object.__getattribute__(obj,
     # "____id_pack__")`` either succeeds (netref) or raises

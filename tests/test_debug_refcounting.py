@@ -58,7 +58,7 @@ class TestDebugRefcountingClientSide(unittest.TestCase):
         log_stream = StringIO()
         handler = logging.StreamHandler(log_stream)
         handler.setLevel(logging.DEBUG)
-        client_logger = logging.getLogger("rpyc.test.debug_refcounting.client")
+        client_logger = logging.getLogger("rpyc_async.test.debug_refcounting.client")
         client_logger.setLevel(logging.DEBUG)
         client_logger.addHandler(handler)
 

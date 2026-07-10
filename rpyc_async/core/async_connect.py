@@ -162,7 +162,7 @@ async def async_connect(
         #
         # We use the event-driven async_request + awaitable AsyncResult
         # path (which itself refuses to run without asyncio serving — see
-        # rpyc/core/async_.py), honoring the NO-POLLING policy.
+        # rpyc_async/core/async_.py), honoring the NO-POLLING policy.
         # ═══════════════════════════════════════════════════════════════
         try:
             conn._remote_root = await conn.async_request(consts.HANDLE_GETROOT)

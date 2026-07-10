@@ -2,8 +2,8 @@
 must survive GC of the Connection's last user-held reference, and
 must run its finally-drain to completion before going away.
 
-Production observation (downstream application, 2026-05-13): the
-log printed
+Production observation (observed in a downstream service, 2026-05-13):
+the log printed
 
     asyncio - ERROR - Task was destroyed but it is pending!
     task: <Task pending name='Task-3309'
@@ -19,7 +19,7 @@ a strong-reference cycle (Connection → _cleanup_task → Task →
 cleanup_loop coroutine → frame.f_locals['self'] → Connection).
 Python's cycle collector breaks the cycle as soon as no EXTERNAL
 strong reference holds either end. ``asyncio._all_tasks`` is a
-``WeakSet`` (does not count). When a downstream application evicts a
+``WeakSet`` (does not count). When a downstream service evicts a
 torn-down Connection from its connection registry (the
 ``is_connected`` liveness fix from 2026-04-27) and the last
 application reference goes away, the whole cycle becomes
@@ -106,7 +106,7 @@ class TestCleanupLoopPin(unittest.IsolatedAsyncioTestCase):
         cleanup_loop pending."""
         self.assertTrue(
             hasattr(protocol, "_CLEANUP_LOOPS"),
-            "rpyc.core.protocol must expose a module-level set "
+            "rpyc_async.core.protocol must expose a module-level set "
             "named _CLEANUP_LOOPS that holds strong refs to "
             "cleanup_loop Tasks across GC of their Connection. "
             "See a related internal incident analysis (not included here)."
@@ -145,7 +145,7 @@ class TestCleanupLoopPin(unittest.IsolatedAsyncioTestCase):
     async def test_cleanup_loop_survives_connection_gc(self) -> None:
         """The 2026-05-13 production failure mode: the last
         application reference to a Connection goes away (e.g.
-        a downstream application's connection registry evicts
+        a downstream service's connection registry evicts
         a torn-down conn). The cleanup_loop Task MUST run its
         ``finally:`` drain to completion — NOT be destroyed
         pending.

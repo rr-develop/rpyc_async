@@ -220,13 +220,13 @@ class DeployedServer(object):
             return SocketStream._connect("localhost", self.local_port)
 
     def connect(self, service=VoidService, config={}):
-        """Same as :func:`~rpyc.utils.factory.connect`, but with the ``host`` and ``port``
+        """Same as :func:`~rpyc_async.utils.factory.connect`, but with the ``host`` and ``port``
         parameters fixed"""
         return rpyc_async.utils.factory.connect_stream(
             SocketStream(self._connect_sock()), service=service, config=config)
 
     def classic_connect(self):
-        """Same as :func:`classic.connect <rpyc.utils.classic.connect>`, but with the ``host`` and
+        """Same as :func:`classic.connect <rpyc_async.utils.classic.connect>`, but with the ``host`` and
         ``port`` parameters fixed"""
         return rpyc_async.utils.classic.connect_stream(
             SocketStream(self._connect_sock()))

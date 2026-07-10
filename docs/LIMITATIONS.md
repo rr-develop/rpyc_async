@@ -18,7 +18,7 @@
 - Server-side concurrency
 
 **✅ Solution: AsyncioServer**
-- Already implemented in `rpyc.utils.async_server`
+- Already implemented in `rpyc_async.utils.async_server`
 - Full bidirectional async support
 - Persistent event loops
 - See [Migration Guide](ASYNCIO_SERVER_MIGRATION.md)
@@ -51,7 +51,7 @@ whole request — long enough to `await` I/O, and (for callbacks) long enough to
 receive the peer's reply while the handler is suspended. A worker thread that
 is blocked inside `serve_all()` can never provide one.
 
-**Root Cause:** `Connection._dispatch` in `rpyc/core/protocol.py`
+**Root Cause:** `Connection._dispatch` in `rpyc_async/core/protocol.py`
 
 ```python
 if needs_async and self._asyncio_enabled:
@@ -128,7 +128,7 @@ at all, `asyncio.gather()` on the client buys you no server-side concurrency.
 
 ### AsyncioServer Architecture
 
-**`rpyc.utils.async_server.AsyncioServer`** solves ALL limitations:
+**`rpyc_async.utils.async_server.AsyncioServer`** solves ALL limitations:
 
 ```
 Main Event Loop (persistent)
@@ -497,7 +497,7 @@ If you cannot migrate the server yet, keep every `exposed_*` method
 - Non-blocking I/O (`loop.add_reader()`, no polling)
 - Server-side concurrency
 
-**✅ Already implemented:** `rpyc.utils.async_server.AsyncioServer`
+**✅ Already implemented:** `rpyc_async.utils.async_server.AsyncioServer`
 
 ---
 

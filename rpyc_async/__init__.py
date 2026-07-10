@@ -3,13 +3,13 @@ Licensed under the MIT license (see `LICENSE` file)
 
 Usage::
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> c = rpyc.connect_by_service("SERVICENAME")
     >>> print(c.root.some_function(1, 2, 3))
 
 Classic-style usage::
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> # `hostname` is assumed to be running a slave-service server
     >>> c = rpyc.classic.connect("hostname")
     >>> print(c.execute("x = 5"))

@@ -14,7 +14,7 @@ failed deletion. Across thousands of GC cycles for a single id_pack
 this produced 128 MB stderr logs.
 
 The fix adds two guards in
-``rpyc.core.protocol.Connection._process_pending_deletions``:
+``rpyc_async.core.protocol.Connection._process_pending_deletions``:
 
 1. Top-of-function: if ``self.closed`` — drain the queue
    silently, emit one ``logger.debug`` summary, return.
@@ -67,7 +67,7 @@ class _DebugLogCapture(logging.Handler):
 
 
 class TestHandleDelSuppressOnClosed(unittest.TestCase):
-    """Regression suite for a related internal incident."""
+    """Regression suite for the HANDLE_DEL storm-after-disconnect bug."""
 
     def setUp(self):
         self.conn = _make_conn()
@@ -142,7 +142,7 @@ class TestHandleDelSuppressOnClosed(unittest.TestCase):
             self.assertEqual(
                 self.stderr_buf.getvalue(), "",
                 "Storm warning must not be printed to stderr "
-                "(this is the regression of a related internal incident)",
+                "(this is the regression of the HANDLE_DEL storm-after-disconnect bug)",
             )
             warns = self.cap.find(
                 logging.WARNING, "Failed to delete remote object"

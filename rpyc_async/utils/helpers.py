@@ -114,7 +114,7 @@ def async_(proxy):
     """
     Returns an asynchronous "version" of the given proxy. Invoking the returned
     proxy will not block; instead it will return an
-    :class:`rpyc.core.async_.AsyncResult` object that you can test for completion
+    :class:`rpyc_async.core.async_.AsyncResult` object that you can test for completion
 
     :param proxy: any **callable** RPyC proxy
 
@@ -161,7 +161,7 @@ globals()['async'] = async_         # backward compatibility alias
 
 class timed(object):
     """Creates a timed asynchronous proxy. Invoking the timed proxy will
-    run in the background and will raise an :class:`rpyc.core.async_.AsyncResultTimeout`
+    run in the background and will raise an :class:`rpyc_async.core.async_.AsyncResultTimeout`
     exception if the computation does not terminate within the given time frame
 
     :param proxy: any **callable** RPyC proxy
@@ -392,7 +392,7 @@ T = TypeVar('T')
 # reference to every Task it creates, until that Task is actually done.
 #
 # Production failure mode if this set is missing (observed in a
-# downstream application, 2026-04-27 first occurrence, 2026-05-08 recurrence):
+# downstream service, 2026-04-27 first occurrence, 2026-05-08 recurrence):
 #
 #   1. ``fire_and_forget_async(conn.root.foo(...), timeout=10, …)``
 #      creates a Task; the caller discards the returned reference.
@@ -404,7 +404,7 @@ T = TypeVar('T')
 #      ``AsyncResult.__await__`` is destroyed in PENDING state — no
 #      ``set_result``, no ``set_exception``, no ``cancel()``.
 #   5. The ``add_done_callback`` cleanup in
-#      ``rpyc/core/async_.py::AsyncResult.__await__`` (the cancel-aware
+#      ``rpyc_async/core/async_.py::AsyncResult.__await__`` (the cancel-aware
 #      fix from 2026-04-27) NEVER FIRES, because the future never
 #      reaches a "done" state.
 #   6. The AsyncResult stays pinned in

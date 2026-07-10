@@ -25,7 +25,7 @@ def connect_channel(channel):
     """
     Creates an RPyC connection over the given ``channel``
 
-    :param channel: the :class:`rpyc.core.channel.Channel` instance
+    :param channel: the :class:`rpyc_async.core.channel.Channel` instance
 
     :returns: an RPyC connection exposing ``SlaveService``
     """
@@ -36,7 +36,7 @@ def connect_stream(stream):
     """
     Creates an RPyC connection over the given stream
 
-    :param channel: the :class:`rpyc.core.stream.Stream` instance
+    :param channel: the :class:`rpyc_async.core.stream.Stream` instance
 
     :returns: an RPyC connection exposing ``SlaveService``
     """
@@ -124,7 +124,7 @@ def ssl_connect(host, port=DEFAULT_SERVER_SSL_PORT, keyfile=None,
 
 def ssh_connect(remote_machine, remote_port):
     """Connects to the remote server over an SSH tunnel. See
-    :func:`rpyc.utils.factory.ssh_connect` for more info.
+    :func:`rpyc_async.utils.factory.ssh_connect` for more info.
 
     :param remote_machine: the :class:`plumbum.remote.RemoteMachine` instance
     :param remote_port: the remote TCP port
@@ -175,12 +175,12 @@ def connect_subproc(server_file=None):
 
 # ``connect_thread`` — DELETED. See
 # ``docs/DESIGN_PID_NAMESPACED_ID_PACK.md`` §5 and the note in
-# ``rpyc/utils/factory.py`` where the underlying helper lived.
+# ``rpyc_async/utils/factory.py`` where the underlying helper lived.
 def connect_multiprocess(args={}):
     """
     Starts a SlaveService on a multiprocess process and connects to it.
     Useful for testing purposes and running multicore code that's uses shared
-    memory. See :func:`rpyc.utils.factory.connect_multiprocess`
+    memory. See :func:`rpyc_async.utils.factory.connect_multiprocess`
 
     :returns: an RPyC connection exposing ``SlaveService``
     """

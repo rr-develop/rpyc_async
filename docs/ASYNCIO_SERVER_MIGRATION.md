@@ -174,8 +174,8 @@ loop.add_reader(fd, callback)
 Reject any PR that:
 
 - Adds `await asyncio.sleep(...)` inside a `while` / `for` loop in
-  `rpyc/utils/async_server.py` or the asyncio sections of
-  `rpyc/core/protocol.py`.
+  `rpyc_async/utils/async_server.py` or the asyncio sections of
+  `rpyc_async/core/protocol.py`.
 - Polls `conn.closed` from async code instead of awaiting `wait_closed()`.
 - Introduces a "backoff timer" in the cleanup loop instead of re-waiting on
   the `_deletion_available` event.

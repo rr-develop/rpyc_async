@@ -1,10 +1,10 @@
 """Regression tests for inbound ``_dispatch_request_async`` Task
 strong-ref pin and Connection.close cleanup.
 
-Bug (production, downstream application, 2026-05-11 incident, ~12.1 GB RAM
-in 3 days):
+Bug (production, observed in a downstream service, 2026-05-11 incident,
+~12.1 GB RAM in 3 days):
 
-    rpyc/core/protocol.py:1822 schedules an inbound MSG_REQUEST via
+    rpyc_async/core/protocol.py:1822 schedules an inbound MSG_REQUEST via
 
         asyncio.run_coroutine_threadsafe(
             self._dispatch_request_async(seq, args),
@@ -20,7 +20,7 @@ in 3 days):
     task disappearing mid-execution").
 
     On a long-running busy process under bidirectional async
-    traffic (e.g. a downstream client ↔ agent), GC eventually
+    traffic (e.g. a downstream service ↔ agent), GC eventually
     collects an inbound dispatch task that was parked on
     ``await handler_func(...)``. The handler's coroutine frame is
     destroyed mid-await; if the handler was itself waiting on an
@@ -32,14 +32,14 @@ in 3 days):
     would have completed it is gone.
 
     Heap dump of the 2026-05-11 process showed 1 941 735 leaked
-    AsyncResult chains pinning 12.1 GB of Python heap. See a related
-    internal incident analysis (not included here).
+    AsyncResult chains pinning 12.1 GB of Python heap. See
+    a related internal incident analysis (not included here).
 
 The fix this file guards: ``_dispatch`` must add every Task it
 schedules into a module-level strong-ref set, and remove it via
 ``Task.add_done_callback(...)`` when the Task finishes. This is
 the same pattern that protects ``fire_and_forget_async`` on the
-outbound side (``rpyc.utils.helpers._INFLIGHT``).
+outbound side (``rpyc_async.utils.helpers._INFLIGHT``).
 
 Robustness:
   * No real TCP / socket / RPyC handshake.
@@ -116,14 +116,14 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
         is a module-level set used to pin inbound dispatch tasks."""
         self.assertTrue(
             hasattr(protocol, "_DISPATCH_INFLIGHT"),
-            "rpyc.core.protocol must expose a module-level set "
+            "rpyc_async.core.protocol must expose a module-level set "
             "named _DISPATCH_INFLIGHT to hold strong refs to "
             "inbound dispatch Tasks. Without it, asyncio's "
             "_all_tasks (WeakSet) is the only reference, and a "
             "GC cycle can collect a parked dispatch Task, "
             "leaking the outbound AsyncResult chain the handler "
-            "was awaiting. See a related internal incident "
-            "analysis (not included here)."
+            "was awaiting. See "
+            "a related internal incident analysis (not included here)."
         )
         inflight = protocol._DISPATCH_INFLIGHT
         self.assertIsInstance(
@@ -247,7 +247,7 @@ class TestDispatchStrongRef(unittest.IsolatedAsyncioTestCase):
         O(N), i.e. the whole pipeline O(N²) in the number of
         dispatches processed.
 
-        Production observation: a downstream application
+        Production observation: a downstream service's agent
         hit livelock after ~26 minutes with N≈32 600 — every
         new MSG_REQUEST cost ~30 000 task-iterations,
         ``run_forever`` could no longer drain events fast enough

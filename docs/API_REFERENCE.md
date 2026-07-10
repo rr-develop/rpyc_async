@@ -6,7 +6,7 @@
 
 **Version:** 1.0.0
 **Install:** `pip install rpyc-async`
-**Import name:** `import rpyc`
+**Import name:** `import rpyc_async` (or `import rpyc_async as rpyc` to keep the shorter spelling in existing code)
 **Requires:** Python 3.10+
 
 > `rpyc-async` does not guarantee wire or API compatibility with classic synchronous RPyC.
@@ -328,8 +328,8 @@ task = fire_and_forget_async(
 )
 ```
 
-Both require a running event loop, and are imported from `rpyc.utils.helpers`,
-not from the `rpyc` top level.
+Both require a running event loop, and are imported from `rpyc_async.utils.helpers`,
+not from the `rpyc_async` top level.
 
 The peer needs `AsyncioServer` only if the remote method is `async def`. A
 `ThreadedServer` exposing a plain `def` works too — wrap the netref so the call

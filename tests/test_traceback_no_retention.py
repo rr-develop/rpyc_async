@@ -1,11 +1,11 @@
 """Regression tests: no traceback frame may be retained by a
 long-lived object after the exception has been handled.
 
-Production observation (downstream application, 2026-05-12, ~17.8 GB RSS
-in 19 hours): heap walk found 4 038 032 ``AsyncResult`` instances
+Production observation (observed in a downstream service, 2026-05-12,
+~17.8 GB RSS in 19 hours): heap walk found 4 038 032 ``AsyncResult`` instances
 all pinned by 8 076 060 ``frame`` objects whose qualname was
 ``_handle_async_call`` at file
-``rpyc/core/async_handlers.py:172``. The ``Connection._request_callbacks``
+``rpyc_async/core/async_handlers.py:172``. The ``Connection._request_callbacks``
 dict was empty, ``_INFLIGHT`` and ``_DISPATCH_INFLIGHT`` were
 empty — every prior leak channel had been closed by the fixes in
 commits ``c40fb00``, ``079e80e``, ``0858bd3``, ``e039692``. But

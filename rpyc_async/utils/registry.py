@@ -293,7 +293,7 @@ class RegistryClient(object):
         """Registers the given service aliases with the given TCP port. This
         API is intended to be called only by an RPyC server.
 
-        :param aliases: the :class:`service's <rpyc.core.service.Service>` aliases
+        :param aliases: the :class:`service's <rpyc_async.core.service.Service>` aliases
         :param port: the listening TCP port of the server
         """
         raise NotImplementedError()
@@ -319,7 +319,7 @@ class UDPRegistryClient(RegistryClient):
         list_of_servers = registrar.discover("foo")
 
     .. note::
-       Consider using :func:`rpyc.utils.factory.discover` instead
+       Consider using :func:`rpyc_async.utils.factory.discover` instead
     """
 
     def __init__(self, ip="255.255.255.255", port=REGISTRY_PORT, timeout=2,
@@ -428,7 +428,7 @@ class TCPRegistryClient(RegistryClient):
         list_of_servers = registrar.discover("foo")
 
     .. note::
-       Consider using :func:`rpyc.utils.factory.discover` instead
+       Consider using :func:`rpyc_async.utils.factory.discover` instead
     """
 
     def __init__(self, ip, port=REGISTRY_PORT, timeout=2, logger=None):

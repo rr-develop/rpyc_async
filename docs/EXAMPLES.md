@@ -300,8 +300,8 @@ Sometimes you want to start a remote call and move on without awaiting its
 result. Both helpers schedule the awaitable on the running loop and hand you
 the `asyncio.Task`, routing the outcome to callbacks.
 
-> Import from `rpyc.utils.helpers` — these helpers are **not** re-exported at
-> the `rpyc` top level.
+> Import from `rpyc_async.utils.helpers` — these helpers are **not** re-exported at
+> the `rpyc_async` top level.
 
 | | callbacks | use when |
 |---|---|---|

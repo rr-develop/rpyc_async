@@ -46,7 +46,7 @@ class TestConnectionAsyncio(unittest.TestCase):
                     self.assertTrue(hasattr(conn, "_asyncio_enabled"))
                     self.assertTrue(hasattr(conn, "_loop_fd_registered"))
                     # async_connect auto-enables asyncio serving (see
-                    # rpyc/core/async_connect.py commit 41b062e). So by
+                    # rpyc_async/core/async_connect.py commit 41b062e). So by
                     # the time we can `await` on conn, it IS enabled —
                     # this is the supported state.
                     self.assertTrue(conn._asyncio_enabled)
