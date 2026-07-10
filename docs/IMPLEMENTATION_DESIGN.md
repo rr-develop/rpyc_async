@@ -1,8 +1,10 @@
 # rpyc-async — Detailed Implementation Design
 
-> **Product**: `rpyc-async` (distribution name), the import name remains `rpyc`.
-> This is an asyncio-native fork that split off from upstream RPyC 6.0.1 and is
-> developed as a standalone project with its own version **1.0.0**.
+> **Product**: `rpyc-async` (distribution name); the import name is `rpyc_async`;
+> use `import rpyc_async as rpyc` if you want to keep the short
+> `rpyc.foo` spelling in existing code.
+> This is an asyncio-native fork that split off from upstream RPyC 6.0.1 and
+> evolves as a standalone project with its own version **1.0.0**.
 > Backward compatibility with classic synchronous RPyC is **not guaranteed**.
 > The minimum supported Python version is **3.10**.
 
@@ -28,7 +30,7 @@
 3. **Graceful Degradation**: Peers with different protocol capabilities work correctly
 4. **Thread-Safe**: All operations are safe when used from different threads
 
-### Architectural Layers
+### Architecture Layers
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -39,13 +41,13 @@
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
-│  Service Layer (rpyc.core.service)                      │
+│  Service Layer (rpyc_async.core.service)                │
 │  • Service class (unchanged)                            │
 │  • Async method detection                               │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
-│  Protocol Layer (rpyc.core.protocol)                    │
+│  Protocol Layer (rpyc_async.core.protocol)              │
 │  • Connection class (enhanced)                          │
 │  • Async dispatch pipeline                              │
 │  • Message routing                                      │
@@ -66,7 +68,7 @@
          │            └────────────────────┘
          │
 ┌────────▼────────────────────────────────────────────────┐
-│  Transport Layer (rpyc.core.channel)                    │
+│  Transport Layer (rpyc_async.core.channel)              │
 │  • Socket I/O                                           │
 │  • Frame protocol                                       │
 └─────────────────────────────────────────────────────────┘
@@ -79,7 +81,7 @@
 ### New Files
 
 ```
-rpyc/
+rpyc_async/
 ├── core/
 │   ├── protocol.py          # [MODIFIED] Connection class
 │   ├── async_.py            # [MODIFIED] AsyncResult.__await__()
@@ -120,7 +122,7 @@ rpyc/
 #### New Constants
 
 ```python
-# rpyc/core/consts.py
+# rpyc_async/core/consts.py
 
 # ═══════════════════════════════════════════════════════
 # NEW: Async Message Types
@@ -989,10 +991,10 @@ rpyc-async:                 (class_name, obj_id, class_version, flags)
 ### Protocol Negotiation Flow
 
 > ⚠️ **Not implemented.** The following is a *design proposal*, not a description
-> of current behavior. As of today, `consts.PROTOCOL_VERSION` is declared but is
-> not transmitted or compared against anything; the `____protocol_version__`
-> attribute does not exist, and no version negotiation between peers takes place.
-> Both sides are required to use `rpyc-async`.
+> of the current behavior. As of today, `consts.PROTOCOL_VERSION` is declared but
+> is not sent anywhere and is not checked against anything; the
+> `____protocol_version__` attribute does not exist, and no version negotiation
+> between peers takes place. Both sides are required to use `rpyc-async`.
 
 Proposed scheme (requires exporting the version via netref):
 
@@ -1027,7 +1029,7 @@ else:
 
 > **Important**: rpyc-async is a standalone project. Compatibility with classic
 > synchronous RPyC at the API and protocol level is **not guaranteed**. The table
-> below describes observed behavior with mixed peers, not a contract.
+> below describes the observed behavior with mixed peers, not a contract.
 
 ### Interoperability Matrix
 
@@ -1133,7 +1135,7 @@ class CompatibleService(rpyc.Service):
 ### Phase 1: Core Infrastructure (5-7 days)
 
 #### Task 1.1: Constants & Protocol Version
-**File**: `rpyc/core/consts.py`
+**File**: `rpyc_async/core/consts.py`
 **Estimate**: 2 hours
 **Dependencies**: None
 
@@ -1149,7 +1151,7 @@ class CompatibleService(rpyc.Service):
 - Tests pass
 
 #### Task 1.2: Async Handlers Module
-**File**: `rpyc/core/async_handlers.py` (NEW)
+**File**: `rpyc_async/core/async_handlers.py` (NEW)
 **Estimate**: 1 day
 **Dependencies**: Task 1.1
 
@@ -1167,7 +1169,7 @@ class CompatibleService(rpyc.Service):
 - Tests cover all code paths
 
 #### Task 1.3: Detection Utilities
-**File**: `rpyc/utils/helpers.py`
+**File**: `rpyc_async/utils/helpers.py`
 **Estimate**: 4 hours
 **Dependencies**: None
 
@@ -1186,7 +1188,7 @@ class CompatibleService(rpyc.Service):
 ### Phase 2: Protocol Layer (7-10 days)
 
 #### Task 2.1: Connection Enhancement - Asyncio Integration
-**File**: `rpyc/core/protocol.py`
+**File**: `rpyc_async/core/protocol.py`
 **Estimate**: 2 days
 **Dependencies**: Task 1.1, 1.2, 1.3
 
@@ -1205,7 +1207,7 @@ class CompatibleService(rpyc.Service):
 - Tests pass
 
 #### Task 2.2: Connection Enhancement - Async Dispatch
-**File**: `rpyc/core/protocol.py`
+**File**: `rpyc_async/core/protocol.py`
 **Estimate**: 3 days
 **Dependencies**: Task 2.1
 
@@ -1226,7 +1228,7 @@ class CompatibleService(rpyc.Service):
 - Tests cover all message types
 
 #### Task 2.3: Boxing/Unboxing Enhancement
-**File**: `rpyc/core/protocol.py`
+**File**: `rpyc_async/core/protocol.py`
 **Estimate**: 2 days
 **Dependencies**: Task 1.1
 
@@ -1246,7 +1248,7 @@ class CompatibleService(rpyc.Service):
 ### Phase 3: AsyncResult & Netref (5-7 days)
 
 #### Task 3.1: AsyncResult.__await__()
-**File**: `rpyc/core/async_.py`
+**File**: `rpyc_async/core/async_.py`
 **Estimate**: 3 days
 **Dependencies**: Task 2.2
 
@@ -1265,7 +1267,7 @@ class CompatibleService(rpyc.Service):
 - Tests cover timeout, cancellation
 
 #### Task 3.2: Netref Async Detection
-**File**: `rpyc/core/netref.py`
+**File**: `rpyc_async/core/netref.py`
 **Estimate**: 2 days
 **Dependencies**: Task 2.3, 3.1
 
@@ -1607,7 +1609,7 @@ def test_sync_call_no_regression(async_connection):
 
 ### Risk Matrix
 
-| Risk | Likelihood | Impact | Mitigation |
+| Risk | Probability | Impact | Mitigation |
 |------|-------------|---------|-----------|
 | **Silent misbehaviour against legacy peers** | Medium | Critical | • Extensive interoperability tests<br>• Protocol negotiation<br>• Explicit errors instead of silent fallback |
 | **Event loop integration bugs** | High | High | • Thorough testing with different loops<br>• Use established patterns (add_reader)<br>• Code review by asyncio experts |
@@ -1769,13 +1771,13 @@ async def test_no_memory_leak():
 
 ### Code
 
-- [ ] `rpyc/core/consts.py` - New constants
-- [ ] `rpyc/core/async_handlers.py` - Async handler implementations
-- [ ] `rpyc/core/protocol.py` - Enhanced Connection class
-- [ ] `rpyc/core/async_.py` - AsyncResult.__await__()
-- [ ] `rpyc/core/netref.py` - Async proxy support
-- [ ] `rpyc/utils/helpers.py` - Async detection utilities
-- [ ] `rpyc/utils/asyncio_helpers.py` - Event loop helpers
+- [ ] `rpyc_async/core/consts.py` - New constants
+- [ ] `rpyc_async/core/async_handlers.py` - Async handler implementations
+- [ ] `rpyc_async/core/protocol.py` - Enhanced Connection class
+- [ ] `rpyc_async/core/async_.py` - AsyncResult.__await__()
+- [ ] `rpyc_async/core/netref.py` - Async proxy support
+- [ ] `rpyc_async/utils/helpers.py` - Async detection utilities
+- [ ] `rpyc_async/utils/asyncio_helpers.py` - Event loop helpers
 
 ### Tests
 
