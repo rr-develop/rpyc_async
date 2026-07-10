@@ -29,7 +29,7 @@ Upstream project      RPyC_ by Tomer Filiba and contributors
 Forked at             RPyC 6.0.1
 This fork             ``rpyc-async`` 1.0.0 (versioned independently)
 Distribution name     ``rpyc-async``
-Import name           ``rpyc`` (unchanged)
+Import name           ``rpyc_async`` (see note below)
 Licence               MIT (both upstream and this fork)
 ====================  ===================================================
 
@@ -44,9 +44,18 @@ Installation
 
     pip install rpyc-async
 
-Requires **Python 3.10+**. Because both distributions provide the ``rpyc``
-import name, install only one of them per environment. If you need the classic
-synchronous behaviour, install upstream RPyC instead (``pip install rpyc``).
+Requires **Python 3.10+**. The fork's import name is ``rpyc_async``, while
+upstream RPyC still uses ``rpyc`` — the two distributions can be installed
+side by side in the same environment. If you only need the classic synchronous
+API, install upstream RPyC (``pip install rpyc``); if you need the asyncio-native
+API, install this fork (``pip install rpyc-async``).
+
+Existing code written for upstream can keep the shorter ``rpyc.`` spelling by
+aliasing the import at the top of each module::
+
+    import rpyc_async as rpyc
+
+All examples in this README use that alias.
 
 Server Selection Guide
 ======================
@@ -73,7 +82,7 @@ Quick Examples
 
 **ThreadedServer** (for simple sync/unidirectional async)::
 
-    from rpyc import ThreadedServer, Service
+    from rpyc_async import ThreadedServer, Service
 
     class MyService(Service):
         def exposed_sync_method(self, x):
@@ -84,7 +93,7 @@ Quick Examples
 
 **AsyncioServer** (for bidirectional async with callbacks)::
 
-    from rpyc import AsyncioServer, Service
+    from rpyc_async import AsyncioServer, Service
     import asyncio
 
     class MyService(Service):
@@ -104,7 +113,8 @@ Quick Examples
 **Client for AsyncioServer** — use ``await rpyc.async_connect(...)``, NOT
 ``rpyc.connect()``::
 
-    import rpyc, asyncio
+    import rpyc_async as rpyc
+    import asyncio
 
     async def main():
         conn = await rpyc.async_connect("localhost", 18861)

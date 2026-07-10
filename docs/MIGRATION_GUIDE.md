@@ -11,7 +11,7 @@ the connection on both ends.
 
 **Key Points:**
 - Backward compatibility with classic synchronous RPyC is **not guaranteed**
-- The import name stays `import rpyc`; only the distribution name changes
+- The import name is `rpyc_async`; use `import rpyc_async as rpyc` to keep existing code reading as `rpyc.foo`
 - Async services, async clients and bidirectional async callbacks are first-class
 - Requires Python 3.10 or newer
 
@@ -22,12 +22,12 @@ pip install rpyc-async     # distribution name
 ```
 
 ```python
-import rpyc                # import name is unchanged
+import rpyc_async as rpyc  # import name is `rpyc_async`; alias keeps `rpyc.foo` spelling
 ```
 
 If you need the classic synchronous behaviour, install upstream RPyC instead
-(`pip install rpyc`). Both distributions provide the same import name, so install only one
-of them per environment.
+(`pip install rpyc`). The fork uses `rpyc_async` as its import name, so it can be
+installed alongside upstream `rpyc` in the same environment without conflict.
 
 ---
 

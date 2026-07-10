@@ -11,7 +11,7 @@ You can "rewire" ``stdin``, ``stdout`` and ``stderr`` between RPyC hosts. For ex
 if you want to "forward" the ``stdout`` of a remote process to your local ``tty``,
 you can use the following receipt::
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> c = rpyc.classic.connect("localhost")
     >>> c.execute("print('hi there')")   # this will print on the host
     >>> import sys

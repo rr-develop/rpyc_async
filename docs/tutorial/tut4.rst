@@ -20,7 +20,7 @@ Since in python functions (as well as any other value) are objects, and since RP
 symmetrical, local functions can be passed as arguments to remote objects, and vice versa.
 Here's an example ::
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> c = rpyc.classic.connect("localhost")
     >>> rlist = c.modules.builtins.list((0,1,2,3,4,5,6,7,8,9))  # this is a remote list
     >>> rlist

@@ -44,7 +44,7 @@ objects have several properties and methods that
 This may sound a bit complicated, so let us have a look at some real-life code, to convince you
 it is not that scary::
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> c=rpyc.classic.connect("localhost")
     >>> c.modules.time.sleep
     <built-in function sleep>
@@ -156,7 +156,7 @@ consider the following ``FileMonitor`` example -- it monitors a file
 
 And here's a live demonstration of events::
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> f = open("/tmp/floop.bloop", "wb", buffering=0)
     >>> conn = rpyc.connect("localhost", 18871)
     >>> bgsrv = rpyc.BgServingThread(conn)  # creates a bg thread to process incoming events

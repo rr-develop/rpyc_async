@@ -62,7 +62,7 @@ ways to do that, but the simplest is ::
 To the remote party, the service is exposed as the root object of the connection, e.g.,
 ``conn.root``. Now you know all you need to understand this short demo:
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> c = rpyc.connect("localhost", 18861)
     >>> c.root
     <__main__.MyService object at 0x834e1ac>

@@ -17,7 +17,7 @@ Start a classic server using::
 
 And connect your client::
 
-    >>> import rpyc
+    >>> import rpyc_async as rpyc
     >>> conn = rpyc.classic.connect("localhost")
 
 
