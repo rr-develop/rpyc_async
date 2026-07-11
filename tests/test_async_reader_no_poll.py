@@ -36,7 +36,9 @@ class _AsyncReaderHarness(unittest.IsolatedAsyncioTestCase):
         """Build a Connection over ``sock`` and capture its add_reader cb +
         the loop's reader add/remove activity. Does NOT actually arm the loop
         on the fd (we fire the captured callback manually, deterministically)."""
-        conn = Connection(VoidService(), Channel(SocketStream(sock)), config={})
+        conn = Connection(
+            VoidService(), Channel(SocketStream(sock)), config={"bind_threads": False}
+        )
         loop = asyncio.get_running_loop()
         state: dict[str, Any] = {
             "reader": None, "added_fd": None, "removed_fds": [],
