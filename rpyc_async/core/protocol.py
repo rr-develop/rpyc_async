@@ -1151,7 +1151,7 @@ class Connection(object):
             # in-memory framing — no socket access, no poll.
             for frame in self._extract_frames(chunk):
                 try:
-                    self._dispatch(frame)
+                    self._dispatch_inbound(frame)
                     with self._recv_event:
                         self._recv_event.notify_all()
                 except EOFError:
@@ -2680,6 +2680,42 @@ class Connection(object):
         elif self._config["logger"] is not None:
             debug_msg = 'Recieved {} seq {} and a related request callback did not exist'
             self._config["logger"].debug(debug_msg.format(msg, seq))
+
+    def _dispatch_inbound(self, data):
+        """Peel bind_threads routing headers (when enabled) and dispatch."""
+        if not self._bind_threads:
+            self._dispatch(data)
+            return
+
+        remote_thread_id, local_thread_id = brine.I8I8.unpack(data[:16])
+        message = data[16:]
+        this_thread = self._get_thread()
+
+        if local_thread_id == UNBOUND_THREAD_ID and this_thread._occupation_count != 0:
+            new = False
+            with self._lock:
+                for thread in self._thread_pool:
+                    if thread._occupation_count == 0 and not thread._event.is_set():
+                        thread._deque.append((remote_thread_id, message))
+                        thread._event.set()
+                        break
+                else:
+                    new = True
+            if new:
+                self._thread_pool_executor.submit(
+                    self._serve_temporary, remote_thread_id, message
+                )
+            return
+
+        if local_thread_id not in {UNBOUND_THREAD_ID, this_thread.id}:
+            thread = self._get_thread(id=local_thread_id)
+            with self._lock:
+                thread._deque.append((remote_thread_id, message))
+                thread._event.set()
+            return
+
+        this_thread._remote_thread_id = remote_thread_id
+        self._dispatch(message)
 
     def _dispatch(self, data):  # serving---dispatch?
         msg, = brine.I1.unpack(data[:1])  # unpack just msg to minimize time to release
