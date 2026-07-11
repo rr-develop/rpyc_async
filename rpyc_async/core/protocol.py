@@ -2691,6 +2691,13 @@ class Connection(object):
         message = data[16:]
         this_thread = self._get_thread()
 
+        # Asyncio inbound is serviced on the connection's event loop; the
+        # thread-pool deque routing below is only consumed by _serve_bound.
+        if self._asyncio_enabled:
+            this_thread._remote_thread_id = remote_thread_id
+            self._dispatch(message)
+            return
+
         if local_thread_id == UNBOUND_THREAD_ID and this_thread._occupation_count != 0:
             new = False
             with self._lock:

@@ -42,7 +42,9 @@ class TestOnReadableEofStorm(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self._safe_close, a)
         b.close()  # peer GONE → 'a' will read EOF (b'') immediately
 
-        conn = Connection(VoidService(), Channel(SocketStream(a)), config={})
+        conn = Connection(
+            VoidService(), Channel(SocketStream(a)), config={"bind_threads": False}
+        )
         loop = asyncio.get_running_loop()
         state: dict[str, Any] = {"reader": None, "added_fd": None,
                                  "removed_fds": [], "close_calls": 0}
