@@ -35,7 +35,7 @@ they were local.
 
 .. figure:: _static/screenshot.png
 
-   A screenshot of a Windows client connecting to a Linux server. Note that text written
+   A screenshot of a remote client connecting to a server. Note that text written
    to the server's ``stdout`` is actually printed on the server's console.
 
 
@@ -67,8 +67,9 @@ Features
 
 * **Synchronous** and :ref:`asynchronous <async>` operation
 
-* **Platform Agnostic** - 32/64 bit, little/big endian, Windows/Linux/Solaris/Mac...
-  access objects across different architectures.
+* **Platform Support** - 32/64 bit, little/big endian (cross-architecture
+  access). Tested **on Linux only** (CPython 3.10+); **Windows is currently
+  not supported** (see :ref:`install` for details).
 
 * **Low Overhead** - RpyC takes an *all-in-one* approach, using a compact binary
   protocol, and requiring no complex setup (name servers, HTTP, URL-mapping, etc.)

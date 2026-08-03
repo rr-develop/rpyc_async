@@ -24,12 +24,14 @@ Platforms and Interpreters
 RPyC is a pure-python library, and as such can run on any architecture and
 platform that runs python (or one of its other implementations), both 32-
 and 64-bit. This is also true for a client and its server, which may run on
-different architectures. The latest release supports:
+different architectures.
 
-* **Python** (CPython) 2.7-3.7
-* May work on py2.6
-* May work with **Jython** and **IronPython**. However, these are not primary
-  concerns for me. Breakage may occur at any time.
+**rpyc-async** (this fork) requires **CPython 3.10+** and has been
+**tested on Linux only**. **Windows is currently not supported**: the
+asyncio-native machinery (``async_connect`` / ``AsyncioServer``) relies on
+``loop.add_reader()``, which the default Windows event loop
+(``ProactorEventLoop``) does not implement, and the legacy Windows pipe
+transport requires the third-party ``pywin32`` package.
 
 Cross-Interpreter Compatibility
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -89,4 +91,5 @@ provide more features, and if you wish to use any of those, you must install
 them:
 
 * `PyWin32 <https://sourceforge.net/projects/pywin32/files/pywin32/>`_ - Required
-  for ``PipeStream`` on Windows
+  for the legacy ``PipeStream`` on Windows (Windows itself is not supported
+  by rpyc-async; see "Platforms and Interpreters" above)
