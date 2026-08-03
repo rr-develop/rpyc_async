@@ -3,7 +3,7 @@
 Streams
 =======
 
-.. automodule:: rpyc.core.stream
+.. automodule:: rpyc_async.core.stream
    :members:
 
 
@@ -12,6 +12,6 @@ Streams
 Channel
 =======
 
-.. automodule:: rpyc.core.channel
+.. automodule:: rpyc_async.core.channel
    :members:
 

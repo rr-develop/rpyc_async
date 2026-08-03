@@ -12,7 +12,7 @@ Starting with version 3, RPyC became *service-oriented*, and now servers expose
 well-defined *services*, which define what a client can access. However, since the
 classic mode proved very useful and powerful, especially in testing environments,
 and in order to retain backwards compatibility, the classic mode is still exists
-in current versions -- this time implemented as a :class:`service <rpyc.core.service.SlaveService>`.
+in current versions -- this time implemented as a :class:`service <rpyc_async.core.service.SlaveService>`.
 
 See also the :ref:`API reference <api-classic>`
 

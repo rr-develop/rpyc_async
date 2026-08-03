@@ -99,7 +99,7 @@ this by passing appropriate options when creating the server. For example::
     server.start()
 
 For a description of all available settings see the
-:data:`~rpyc.core.protocol.DEFAULT_CONFIG`.
+:data:`~rpyc_async.core.protocol.DEFAULT_CONFIG`.
 
 
 Shared service instance
@@ -127,7 +127,7 @@ In the second case where you pass in a fully constructed service instance, it
 is trivial to pass additional arguments to the ``__init__`` function. However,
 the situation is slightly more tricky if you want to pass arguments while
 separating the root objects for each connection. In this case, use
-:func:`~rpyc.utils.helpers.classpartial` like so::
+:func:`~rpyc_async.utils.helpers.classpartial` like so::
 
         from rpyc_async.utils.helpers import classpartial
 
@@ -194,7 +194,7 @@ By default, clients (using one of the ``connect()`` functions to connect to a se
 expose the ``VoidService``. As the name suggests, this service exposes no functionality to the
 other party, meaning the server can't make requests to the client (except for explicitly
 passed capabilities, like function callbacks). You can set the service exposed by the client
-by passing the ``service =`` parameter to one of the :func:`~rpyc.utils.factory.connect`
+by passing the ``service =`` parameter to one of the :func:`~rpyc_async.utils.factory.connect`
 functions.
 
 The fact that the services on both ends of the connection are decoupled, does not mean
@@ -204,7 +204,7 @@ services on both ends can be different, but do keep it in mind that if you need 
 between the parties, both services must be "compatible".
 
 .. note::
-   **Classic mode:** when using any of the :func:`~rpyc.utils.classic.connect` functions,
+   **Classic mode:** when using any of the :func:`~rpyc_async.utils.classic.connect` functions,
    the client-side service is set to ``SlaveService`` as well (being identical to the server).
 
 

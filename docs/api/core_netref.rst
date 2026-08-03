@@ -3,7 +3,7 @@
 Netref
 ======
 
-.. automodule:: rpyc.core.netref
+.. automodule:: rpyc_async.core.netref
    :members:
 
 
@@ -12,5 +12,5 @@ Netref
 Async
 =====
 
-.. automodule:: rpyc.core.async_
+.. automodule:: rpyc_async.core.async_
    :members:

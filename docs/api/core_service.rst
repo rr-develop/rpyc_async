@@ -3,6 +3,6 @@
 Service
 =======
 
-.. automodule:: rpyc.core.service
+.. automodule:: rpyc_async.core.service
    :members:
 

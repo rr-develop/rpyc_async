@@ -3,5 +3,5 @@
 Zero-Deploy RPyC
 ================
 
-.. automodule:: rpyc.utils.zerodeploy
+.. automodule:: rpyc_async.utils.zerodeploy
    :members:

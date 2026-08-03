@@ -5,7 +5,7 @@ Security
 Operating over a network always involve a certain security risk, and requires some awareness.
 Version 3 of RPyC was a rewrite of the library, specifically targeting security and
 service-orientation. Unlike version 2.6, RPyC no longer makes use of insecure protocols like ``pickle``,
-supports :data:`security-related configuration parameters <rpyc.core.protocol.DEFAULT_CONFIG>`,
+supports :data:`security-related configuration parameters <rpyc_async.core.protocol.DEFAULT_CONFIG>`,
 comes with strict defaults, and encourages the use of a capability-based security model. Even so, it behooves you to
 take a layered to secure programming and not let RPyC be a single point of failure.
 
@@ -43,7 +43,7 @@ has the attributes ``foo``, ``bar``, and ``spam``, and you wish to restrict acce
             self.foo = obj.foo
             self.bar = obj.bar
 
-Since this is a common idiom, RPyC provides :func:`~rpyc.utils.helpers.restricted`.
+Since this is a common idiom, RPyC provides :func:`~rpyc_async.utils.helpers.restricted`.
 This function returns a "restricted view" of the given object, limiting access only to the
 explicitly given set of attributes. ::
 
