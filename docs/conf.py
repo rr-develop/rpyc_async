@@ -102,6 +102,8 @@ linkcheck_ignore = [
     r"https?://(www\.)?sourceforge\.net(?:/.*)?$",
     r"https?://rpyc\.sourceforge\.net(?:/.*)?$",
     r"https?://pybuild\.sourceforge\.net(?:/.*)?$",
+    # gevent.org rate-limits CI crawlers (HTTP 429); content verified manually.
+    r"https?://(www\.)?gevent\.org(?:/.*)?$",
 ]
 
 # Cross-references to stdlib / third-party / private symbols that Sphinx
