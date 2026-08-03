@@ -47,7 +47,7 @@ Hardware Resources
 ------------------
 Many times you find yourself in need of utilizing hardware ("physical") resources of one
 machine from another. For instance, some testgear or device can only connect to
-Solaris SPARC machines, but you're comfortable with developing on your Windows workstation.
+Solaris SPARC machines, but you're comfortable with developing on your Linux workstation.
 Assuming your device comes with C bindings, some command-line tool, or accepts commands
 via ``ioctl`` to some `device node <https://en.wikipedia.org/wiki/Device_file>`_ --
 you can just run an RPyC server on that machine, connect to it from your workstation,

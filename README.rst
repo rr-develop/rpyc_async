@@ -57,6 +57,21 @@ aliasing the import at the top of each module::
 
 All examples in this README use that alias.
 
+Platform Support
+----------------
+
+.. warning::
+
+   **Windows is currently not supported.** The asyncio-native machinery
+   (``async_connect`` / ``AsyncioServer``) is built on event-driven
+   file-descriptor readiness (``loop.add_reader``), which the default
+   Windows event loop (``ProactorEventLoop``) does not implement; the
+   legacy Windows pipe transport additionally requires the third-party
+   ``pywin32`` package and is known to be unreliable.
+
+   The current release (1.0.0) has been tested **only on Linux** (CPython
+   3.10-3.14). There is no CI coverage for Windows or macOS.
+
 Server Selection Guide
 ======================
 
@@ -152,7 +167,7 @@ For more details on async support, see ``docs/LIMITATIONS.md``.
 .. figure:: docs/_static/screenshot.png
    :align: center
 
-   A screenshot of a Windows client connecting to a Linux server.
+   A screenshot of a remote client connecting to a server.
 
    Note that text written to the server's ``stdout`` is actually printed on
    the server's console.

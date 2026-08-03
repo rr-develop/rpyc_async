@@ -9,7 +9,7 @@ connections and calls :func:`~rpyc_async.core.protocol.Connection.serve_all`. RP
 with three built-in servers:
 
 * Forking - forks a child-process to handle each incoming connection (POSIX only)
-* Threaded - spawns a thread to handle each incoming connection (POSIX and Windows)
+* Threaded - spawns a thread to handle each incoming connection (POSIX only; Windows is not supported by rpyc-async)
 * Thread Pool - assigns a worker-thread for each incoming connection from the thread pool; if the
   thread pool is exhausted, the connection is dropped.
 
