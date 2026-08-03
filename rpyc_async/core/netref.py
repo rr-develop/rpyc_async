@@ -104,11 +104,11 @@ class BaseNetref(object, metaclass=NetrefMetaclass):
     Do not use this class directly; use :func:`class_factory` instead.
 
     :param conn: the :class:`rpyc_async.core.protocol.Connection` instance
-    :param id_pack: id tuple for an object ~ (name_pack, remote-class-id, remote-instance-id)
-        (cont.) name_pack := __module__.__name__ (hits or misses on builtin cache and sys.module)
-                remote-class-id := id of object class (hits or misses on netref classes cache and instance checks)
-                remote-instance-id := id object instance (hits or misses on proxy cache)
-        id_pack is usually created by rpyc_async.lib.get_id_pack
+    :param id_pack: id tuple for an object: ``(name_pack, remote-class-id,
+        remote-instance-id)`` where ``name_pack`` is the module-qualified class
+        name, ``remote-class-id`` is the id of the object class, and
+        ``remote-instance-id`` is the id of the object instance; usually created
+        by :func:`rpyc_async.lib.get_id_pack`
     """
     __slots__ = [
         "____conn__",
