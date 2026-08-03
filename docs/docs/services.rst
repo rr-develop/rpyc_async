@@ -4,7 +4,7 @@ Services
 ========
 
 RPyC is oriented around the notion of :ref:`services <api-service>`. Services are classes that
-derive from :class:`rpyc.core.service.Service` and define "exposed methods" -- normally, methods
+derive from :class:`rpyc_async.core.service.Service` and define "exposed methods" -- normally, methods
 whose name explicitly begins with ``exposed_``. Services also have a name, or a list of aliases.
 Normally, the name of the service is the name of its class (excluding a possible ``Service``
 suffix), but you can override this behavior by specifying the ``ALIASES`` attribute in the class.
@@ -104,11 +104,11 @@ Built-in Services
 -----------------
 RPyC comes bundled with two built-in services:
 
-* :class:`~rpyc.core.service.VoidService`, which is an empty "do-nothing"
+* :class:`~rpyc_async.core.service.VoidService`, which is an empty "do-nothing"
   service. It's useful when you want only one side of the connection to provide a service,
   while the other side a "consumer".
 
-* :class:`~rpyc.core.service.SlaveService`, which implements
+* :class:`~rpyc_async.core.service.SlaveService`, which implements
   :ref:`Classic Mode<classic>` RPyC.
 
 Decoupled Services

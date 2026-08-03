@@ -3,5 +3,5 @@
 Server
 ======
 
-.. automodule:: rpyc.utils.server
+.. automodule:: rpyc_async.utils.server
    :members:

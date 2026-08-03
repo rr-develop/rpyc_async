@@ -3,5 +3,5 @@
 Factories
 =========
 
-.. automodule:: rpyc.utils.factory
+.. automodule:: rpyc_async.utils.factory
    :members:

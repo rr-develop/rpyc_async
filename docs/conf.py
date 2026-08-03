@@ -94,6 +94,31 @@ pygments_style = 'sphinx'
 autodoc_member_order = "bysource"
 
 
+# -- Options for linkcheck -----------------------------------------------------
+
+# Historical URLs hosted on SourceForge return 403 to automated crawlers
+# (the project itself has long moved off the platform).
+linkcheck_ignore = [
+    r"https?://(www\.)?sourceforge\.net(?:/.*)?$",
+    r"https?://rpyc\.sourceforge\.net(?:/.*)?$",
+    r"https?://pybuild\.sourceforge\.net(?:/.*)?$",
+]
+
+# Cross-references to stdlib / third-party / private symbols that Sphinx
+# cannot resolve (not documented in this tree); the linkcheck job runs
+# with nit-picky mode so these must be whitelisted explicitly.
+nitpick_ignore = [
+    ("py:class", "_asyncio.Task"),
+    ("py:class", "AsyncResultTimeout"),
+    ("py:class", "plumbum.remote.RemoteMachine"),
+    ("py:class", "rpyc_async.core.async_.AsyncResultTimeout"),
+    ("py:class", "rpyc_async.utils.helpers.T"),
+    ("py:data", "_builtin_types"),
+    ("py:func", "os.stat"),
+    ("py:meth", "rpyc_async.core.protocol.Connection._unbox"),
+]
+
+
 # -- Options for HTML output ---------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for

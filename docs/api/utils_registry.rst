@@ -3,5 +3,5 @@
 Registry
 ========
 
-.. automodule:: rpyc.utils.registry
+.. automodule:: rpyc_async.utils.registry
    :members:

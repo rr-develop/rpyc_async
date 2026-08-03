@@ -3,7 +3,7 @@
 Brine
 =====
 
-.. automodule:: rpyc.core.brine
+.. automodule:: rpyc_async.core.brine
    :members:
 
 .. _api-vinegar:
@@ -11,5 +11,5 @@ Brine
 Vinegar
 =======
 
-.. automodule:: rpyc.core.vinegar
+.. automodule:: rpyc_async.core.vinegar
    :members:

@@ -3,7 +3,7 @@
 Protocol
 ========
 
-.. automodule:: rpyc.core.protocol
+.. automodule:: rpyc_async.core.protocol
    :members:
 
 

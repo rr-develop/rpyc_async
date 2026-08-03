@@ -15,10 +15,10 @@ asynchronous behavior.
 
 async_()
 --------
-The wrapper :func:`~rpyc.utils.helpers.async_` takes any *callable*
+The wrapper :func:`~rpyc_async.utils.helpers.async_` takes any *callable*
 :ref:`netref <api-netref>` and returns an asynchronous-wrapper around that netref.
 When invoked, this wrapper object dispatches the request and immediately returns an
-:class:`~rpyc.core.async_.AsyncResult`, instead of waiting for the response.
+:class:`~rpyc_async.core.async_.AsyncResult`, instead of waiting for the response.
 
 Usage
 ^^^^^
@@ -33,7 +33,7 @@ return an ``AsyncResult`` ::
 
 Which means your client can continue working normally, while the server
 performs the request. There are several pitfalls using :func:`async_
-<pyc.utils.helpers.async_>`, be sure to read the Notes_ section!
+<rpyc_async.utils.helpers.async_>`, be sure to read the Notes_ section!
 
 You can test for completion using ``res.ready``, wait for completion using ``res.wait()``,
 and get the result using ``res.value``. You may set a timeout for the result using
@@ -60,10 +60,10 @@ order.
 
 timed()
 -------
-:class:`~rpyc.utils.helpers.timed` allows you to set a timeout for a synchronous invocation.
+:class:`~rpyc_async.utils.helpers.timed` allows you to set a timeout for a synchronous invocation.
 When a ``timed`` function is invoked, you'll synchronously wait for the result, but no longer
 than the specified timeout. Should the invocation take longer, a
-:class:`~rpyc.core.async_.AsyncResultTimeout` will be raised.
+:class:`~rpyc_async.core.async_.AsyncResultTimeout` will be raised.
 
 Under the hood, ``timed`` is actually implemented with ``async_``: it begins dispatches the
 operation, sets a timeout on the ``AsyncResult``, and waits for the response.
@@ -86,7 +86,7 @@ Example
 
 Background Serving Thread
 -------------------------
-:class:`~rpyc.utils.helpers.BgServingThread` is a helper class that simply starts
+:class:`~rpyc_async.utils.helpers.BgServingThread` is a helper class that simply starts
 a background thread to serve incoming requests. Using it is quite simple::
 
     bgsrv = rpyc.BgServingThread(conn)

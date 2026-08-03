@@ -3,7 +3,7 @@
 Authenticators
 ==============
 
-.. automodule:: rpyc.utils.authenticators
+.. automodule:: rpyc_async.utils.authenticators
    :members:
 
 

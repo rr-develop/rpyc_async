@@ -5,7 +5,7 @@ RPyC Servers
 
 Since RPyC is a symmetric protocol (where both client and server can process requests),
 an :ref:`RPyC server <api-server>` is a largely just a main-loop that accepts incoming
-connections and calls :func:`~rpyc.core.protocol.Connection.serve_all`. RPyC comes
+connections and calls :func:`~rpyc_async.core.protocol.Connection.serve_all`. RPyC comes
 with three built-in servers:
 
 * Forking - forks a child-process to handle each incoming connection (POSIX only)
@@ -14,7 +14,7 @@ with three built-in servers:
   thread pool is exhausted, the connection is dropped.
 
 If you wish to implement new servers (say, reactor-based, etc.), you can derive from
-:class:`rpyc.utils.server.Server` and implement ``_accept_method()`` to your own liking.
+:class:`rpyc_async.utils.server.Server` and implement ``_accept_method()`` to your own liking.
 
 .. note::
    RPyC uses the notion of *authenticators* to authenticate incoming connections. An authenticator
@@ -95,7 +95,7 @@ used with conjunction with ``--vdb``.
 Custom RPyC Servers
 -------------------
 Starting an RPyC server that exposes your service is quite easy -- when you construct the
-:class:`rpyc.utils.server.Server` instance, pass it your :class:`rpyc.core.service.Service` factory.
+:class:`rpyc_async.utils.server.Server` instance, pass it your :class:`rpyc_async.core.service.Service` factory.
 You can use the following snippet::
 
   import rpyc_async as rpyc
@@ -111,7 +111,7 @@ You can use the following snippet::
       server = ThreadedServer(MyService, port = 12345)
       server.start()
 
-Refer to :class:`rpyc.utils.server.Server` for the list all possible arguments.
+Refer to :class:`rpyc_async.utils.server.Server` for the list all possible arguments.
 
 .. _registry-server:
 

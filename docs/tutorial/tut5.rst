@@ -17,7 +17,7 @@ that will **eventually** hold the result.
 Note that there is no guarantee on execution order for async requests!
 
 To turn the invocation of a remote function (or any callable object) asynchronous,
-all you have to do is wrap it with :func:`async_ <rpyc.utils.helpers.async_>`, which creates a
+all you have to do is wrap it with :func:`async_ <rpyc_async.utils.helpers.async_>`, which creates a
 wrapper function that will return an ``AsyncResult`` instead of blocking. ``AsyncResult``
 objects have several properties and methods that
 
@@ -180,7 +180,7 @@ And here's a live demonstration of events::
     >>> bgsrv.stop()
     >>> conn.close()
 
-Note that in this demo I used :class:`~rpyc.utils.helpers.BgServingThread`,
+Note that in this demo I used :class:`~rpyc_async.utils.helpers.BgServingThread`,
 which basically starts a background thread to serve all incoming requests, while the main
 thread is free to do as it wills. You don't have to open a second thread for that,
 if your application has a reactor (like ``gtk``'s ``gobject.io_add_watch``): simply register

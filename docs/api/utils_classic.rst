@@ -3,7 +3,7 @@
 Classic
 =======
 
-.. automodule:: rpyc.utils.classic
+.. automodule:: rpyc_async.utils.classic
    :members:
 
 .. _api-helpers:
@@ -11,6 +11,6 @@ Classic
 Helpers
 =======
 
-.. automodule:: rpyc.utils.helpers
+.. automodule:: rpyc_async.utils.helpers
    :members:
 
