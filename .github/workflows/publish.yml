@@ -12,7 +12,9 @@ jobs:
     # Trusted Publisher configuration).
     environment: pypi
     # Required for Trusted Publishing (OIDC): PyPI must have a pending
-    # publisher for this repo/workflow (rr-develop/rpyc_async, workflow "Publish to PyPI").
+    # publisher for this repo (rr-develop/rpyc_async). Note: the PyPI
+    # "Workflow name" field takes the workflow FILENAME "publish.yml"
+    # (not the display name), and the environment "pypi" if configured.
     permissions:
       id-token: write
       contents: read
