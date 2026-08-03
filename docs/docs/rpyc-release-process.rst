@@ -17,8 +17,8 @@ A walkthrough of doing a RPyC Release.
 4. Verify changes and run ``export ver=$(python -c 'import rpyc_async; print(rpyc_async.__version__)')``, ``git add .``, and ``git push``.
 5. Mirror the private repository to the public one (``main``/``public`` branches) following the project's regular mirroring process.
 6. Create an Annotated tag with a ``v`` prefix (the ``Publish to PyPI`` workflow triggers on ``v*`` tags): ``git tag -a v${ver} -m "Updated CHANGELOG.rst and version for release v${ver}"``
-7. Publish release tag on the public repository: ``git push origin v${ver}``
-8. The ``Publish to PyPI`` workflow builds the sdist/wheel and uploads it to PyPI via Trusted Publishing (OIDC). No token is needed; make sure the PyPI project has a pending publisher for ``rr-develop/rpyc_async`` with workflow ``Publish to PyPI`` (and environment ``pypi`` if configured).
+7. Publish the release tag on the **public** repository — the workflow runs there, and the private repository's ``origin`` points at the private remote. From the public worktree: ``git push public-release v${ver}``
+8. The ``Publish to PyPI`` workflow (workflow filename ``publish.yml``) builds the sdist/wheel and uploads it to PyPI via Trusted Publishing (OIDC). No token is needed; make sure the PyPI project has a pending publisher for ``rr-develop/rpyc_async`` with workflow filename ``publish.yml`` and environment ``pypi``. Also create the ``pypi`` environment on the public repository with protection rules (e.g., required reviewers) — otherwise ``environment: pypi`` is a no-op.
 9. Verify the release: in a clean environment run ``pip install rpyc-async==${ver}`` and ``python -c 'import rpyc_async; print(rpyc_async.__version__)'``.
 10. Create a GitHub release such that the notes are from the ``CHANGELOG.rst`` entry (``%s/`#/#/g`` and ``%s/`_//g``), and you are done!
 
