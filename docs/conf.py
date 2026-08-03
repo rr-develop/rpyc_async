@@ -115,6 +115,7 @@ nitpick_ignore = [
     ("py:class", "rpyc_async.utils.helpers.T"),
     ("py:data", "_builtin_types"),
     ("py:func", "os.stat"),
+    ("py:func", "rpyc_async.lib.get_id_pack"),
     ("py:meth", "rpyc_async.core.protocol.Connection._unbox"),
 ]
 
