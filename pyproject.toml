@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 name = "rpyc-async"
 description = "Asyncio-native fork of RPyC for reliable and efficient asynchronous inter-process calls"
 readme = "README.rst"
-license = {text = "MIT License"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Roman Rodionov" },

@@ -164,7 +164,7 @@ For more details on async support, see ``docs/LIMITATIONS.md``.
    for the full policy and ``tests/test_no_polling_policy.py`` for
    enforcement.
 
-.. figure:: docs/_static/screenshot.png
+.. figure:: https://raw.githubusercontent.com/rr-develop/rpyc_async/main/docs/_static/screenshot.png
    :align: center
 
    A screenshot of a remote client connecting to a server.
