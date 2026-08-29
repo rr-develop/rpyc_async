@@ -1,6 +1,6 @@
 # rpyc-async Documentation
 
-**rpyc-async 1.0.0** is an asyncio-native fork of RPyC, providing native
+**rpyc-async 1.1.0** is an asyncio-native fork of RPyC, providing native
 async/await support for reliable and efficient asynchronous remote procedure
 calls. It is versioned independently of upstream RPyC (forked from RPyC 6.0.1).
 

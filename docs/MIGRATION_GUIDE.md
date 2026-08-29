@@ -1,6 +1,6 @@
 # Migration Guide: moving to the asyncio-native API (rpyc-async)
 
-This guide helps you move existing RPC code onto **rpyc-async 1.0.0**, the asyncio-native
+This guide helps you move existing RPC code onto **rpyc-async 1.1.0**, the asyncio-native
 fork of RPyC (forked from upstream RPyC 6.0.1).
 
 ## Overview

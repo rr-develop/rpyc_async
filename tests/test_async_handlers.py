@@ -19,6 +19,11 @@ class TestAsyncHandlers(unittest.TestCase):
         self.conn = Mock()
         self.conn._box = lambda x: x
         self.conn._unbox = lambda x: x
+        # ``_handle_async_callattr`` resolves attributes through the
+        # connection (``_access_attr``: exposed_ prefix, _rpyc_getattr hooks
+        # and the allow_* permission checks) rather than via a bare getattr.
+        # Stand in for a connection configured to allow plain attributes.
+        self.conn._handle_getattr = lambda obj, name: getattr(obj, name)
 
     def test_handle_async_call_with_async_function(self):
         """Test _handle_async_call with async function."""
@@ -131,6 +136,53 @@ class TestAsyncHandlers(unittest.TestCase):
             asyncio.run(
                 async_handlers._handle_async_callattr(
                     self.conn, obj, 'nonexistent', (), ()
+                )
+            )
+
+    def test_handle_async_callattr_uses_connection_access_path(self):
+        """Resolution MUST go through the connection, not a bare getattr.
+
+        A bare ``getattr`` would bypass the ``exposed_`` prefix, the
+        ``_rpyc_getattr`` hook and the ``allow_getattr`` / ``allow_*_attrs``
+        permission checks that the sync sibling ``_handle_callattr``
+        enforces -- both a correctness and a security difference.
+        """
+        class Service:
+            async def exposed_ping(self, x):
+                return x + 1
+
+        obj = Service()
+        seen = []
+
+        def resolving_getattr(target, name):
+            # Mimic a real connection: apply the exposed_ prefix.
+            seen.append(name)
+            return getattr(target, "exposed_" + name)
+
+        self.conn._handle_getattr = resolving_getattr
+
+        result = asyncio.run(
+            async_handlers._handle_async_callattr(self.conn, obj, 'ping', (1,), ())
+        )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(seen, ['ping'])
+
+    def test_handle_async_callattr_denied_access_propagates(self):
+        """A refusal from the access path must surface, not be bypassed."""
+        class Service:
+            async def exposed_secret(self):
+                return "leaked"
+
+        def denying_getattr(target, name):
+            raise AttributeError(f"cannot access {name!r}")
+
+        self.conn._handle_getattr = denying_getattr
+
+        with self.assertRaises(AttributeError):
+            asyncio.run(
+                async_handlers._handle_async_callattr(
+                    self.conn, Service(), 'secret', (), ()
                 )
             )
 

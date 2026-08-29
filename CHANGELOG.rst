@@ -1,3 +1,34 @@
+1.1.0 (rpyc-async)
+==================
+Date: 2026-08-29
+
+- ``netref.async_call(proxy, name, *args, **kwargs)``: call a remote method
+  without ever blocking the caller's event loop. Attribute lookup on a netref
+  (``proxy.name``) is a synchronous ``HANDLE_GETATTR`` round-trip whose wait
+  drives the socket from ``AsyncResult.wait()``; performed on the loop that
+  serves the connection, it starves every other coroutine — including the
+  timer meant to bound it — until the peer answers or ``sync_request_timeout``
+  expires. A peer that is merely slow is enough. ``async_call`` issues a
+  single ``HANDLE_ASYNC_CALLATTR`` instead, so both the lookup and the call
+  happen on the peer and the reply arrives event-driven; the result is a
+  normal awaitable, so it is cancellable and ``asyncio.wait_for`` can
+  actually fire. Plain (non-netref) objects fall back to a direct, lazily
+  invoked call.
+- ``utils.helpers.fire_and_forget_call``: a variant of ``fire_and_forget_async``
+  that takes a FACTORY (zero-argument callable returning an awaitable) instead
+  of an awaitable, so ``timeout`` covers creating the awaitable as well.
+  ``fire_and_forget_async`` is UNCHANGED and remains fully supported; the
+  hazard of passing an already-created remote call to it is now documented on
+  the function itself.
+- Fixed ``HANDLE_ASYNC_CALLATTR`` resolving attributes with a bare ``getattr``,
+  which bypassed the ``exposed_`` prefix, ``_rpyc_getattr`` hooks and the
+  ``allow_getattr`` / ``allow_*_attrs`` permission checks that the synchronous
+  ``HANDLE_CALLATTR`` path enforces. This was both a correctness gap (a plain
+  ``Service`` exposing ``exposed_foo`` could not be called as ``foo``) and a
+  security one. NOTE: this fix lives on the SERVING side — a peer running
+  1.0.0 still resolves by bare ``getattr``, so a 1.1 client calling a 1.0
+  server by short name raises ``AttributeError`` until the server is upgraded.
+
 1.0.0 (rpyc-async)
 ==================
 Date: 2026-07-09

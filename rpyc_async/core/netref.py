@@ -1,6 +1,7 @@
 """*NetRef*: a transparent *network reference*. This module contains quite a lot
 of *magic*, so beware.
 """
+import inspect
 import sys
 import types
 from rpyc_async.lib import get_methods, get_id_pack
@@ -77,6 +78,84 @@ def asyncreq(proxy, handler, *args):
     """
     conn = object.__getattribute__(proxy, "____conn__")
     return conn.async_request(handler, proxy, *args)
+
+
+def async_call(proxy, name, *args, **kwargs):
+    """Call ``proxy.name(*args, **kwargs)`` without ever blocking the caller.
+
+    This is the safe replacement for ``proxy.name(...)`` in async code, and
+    the only correct form on the event loop that serves ``proxy``'s
+    connection.
+
+    Why it exists
+    -------------
+    ``proxy.name`` alone is already a blocking network round-trip:
+    ``netref.__getattribute__`` unconditionally issues
+    ``syncreq(HANDLE_GETATTR)``, and ``syncreq`` drives the socket from
+    ``AsyncResult.wait()`` via ``while self._waiting(): self._conn.serve(...)``.
+    On the serving loop that starves every other coroutine until the peer
+    replies — up to the full ``sync_request_timeout`` (30 s by default), and
+    the loop cannot even fire its own timers meanwhile.
+
+    ``Connection.sync_request`` guards user-level RPC (``HANDLE_CALL`` /
+    ``HANDLE_ASYNC_CALL``) against exactly this, but it deliberately
+    whitelists ``HANDLE_GETATTR`` as "short, deterministic, cache-backed".
+    That assumption does not hold: ``_handle_getattr`` runs arbitrary remote
+    code (``__getattr__``, ``_rpyc_getattr``, descriptors), so a peer that is
+    merely slow — not dead — freezes the caller's loop inside attribute
+    resolution. That is the frame py-spy caught in several production
+    outages of a downstream application.
+
+    ``async_call`` sidesteps both hazards by never resolving the attribute
+    locally. It issues a single ``HANDLE_ASYNC_CALLATTR`` request, so the
+    getattr *and* the call happen on the peer, and the reply is delivered
+    event-driven through ``AsyncResult.__await__`` (``loop.create_future()``
+    resolved by the reader) — no polling, no ``serve()`` loop, no blocking.
+
+    Being a normal awaitable, it is also properly cancellable and can be
+    bounded with ``asyncio.wait_for`` — a timeout that can actually fire,
+    unlike one wrapped around an already-blocking expression.
+
+    :param proxy: the netref to call a method on (e.g. ``conn.root``)
+    :param name: the method name, as a string — deliberately NOT
+                 ``proxy.name``, since that would re-introduce the
+                 blocking attribute lookup this function exists to avoid
+    :param args: positional arguments for the remote method
+    :param kwargs: keyword arguments for the remote method
+
+    :returns: an awaitable resolving to the remote method's return value.
+              Works for both ``async def`` and plain ``def`` remote methods.
+
+    Requires asyncio serving to be enabled on the connection, which
+    ``async_connect()`` does automatically.
+
+    Example::
+
+        result = await asyncio.wait_for(
+            netref.async_call(conn.root, "get_last_response"), timeout=5.0
+        )
+
+    .. versionadded:: 1.1
+    """
+    # Plain (non-netref) objects have no connection to send a request on.
+    # Fall back to calling them directly so that test doubles, in-process
+    # stand-ins and already-local objects keep working. Their attribute
+    # access is local and cannot block on a peer, so the hazard this
+    # function guards against does not apply to them.
+    if not isinstance(proxy, BaseNetref):
+        async def _call_local():
+            # Resolve AND call inside the coroutine, so nothing runs until
+            # the caller awaits — the same contract as the netref path.
+            result = getattr(proxy, str(name))(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        return _call_local()
+
+    return asyncreq(
+        proxy, consts.HANDLE_ASYNC_CALLATTR, str(name), args, tuple(kwargs.items())
+    )
 
 
 class NetrefMetaclass(type):

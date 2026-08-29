@@ -4,7 +4,7 @@
 
 `rpyc-async` is an asyncio-native fork of RPyC. It provides native async/await support, allowing you to write asynchronous remote procedures that can be awaited just like local async functions.
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Install:** `pip install rpyc-async`
 **Import name:** `import rpyc_async` (or `import rpyc_async as rpyc` to keep the shorter spelling in existing code)
 **Requires:** Python 3.10+

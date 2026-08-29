@@ -257,8 +257,16 @@ async def _handle_async_callattr(
         calc = Calc()
         result = await _handle_async_callattr(conn, calc, 'add', (3, 4), ())
     """
-    # Get attribute
-    attr = getattr(obj, name)
+    # Resolve the attribute through the connection's normal access path,
+    # NOT via a bare ``getattr``. ``Connection._handle_getattr`` applies
+    # ``_access_attr``: the ``exposed_`` prefix, ``_rpyc_getattr`` hooks and
+    # the ``allow_getattr`` / ``allow_*_attrs`` permission checks.
+    #
+    # A bare ``getattr`` bypassed all of that, which made this handler both
+    # WRONG (a plain ``Service`` exposing ``exposed_foo`` could not be called
+    # as ``foo``, unlike every other call path) and UNSAFE (it ignored the
+    # security config that the sync sibling ``_handle_callattr`` enforces).
+    attr = conn._handle_getattr(obj, name)
 
     # Call via _handle_async_call
     return await _handle_async_call(conn, attr, args, kwargs)

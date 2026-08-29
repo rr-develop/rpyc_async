@@ -27,7 +27,7 @@ Relationship to upstream RPyC
 ====================  ===================================================
 Upstream project      RPyC_ by Tomer Filiba and contributors
 Forked at             RPyC 6.0.1
-This fork             ``rpyc-async`` 1.0.0 (versioned independently)
+This fork             ``rpyc-async`` 1.1.0 (versioned independently)
 Distribution name     ``rpyc-async``
 Import name           ``rpyc_async`` (see note below)
 Licence               MIT (both upstream and this fork)
@@ -69,7 +69,7 @@ Platform Support
    legacy Windows pipe transport additionally requires the third-party
    ``pywin32`` package and is known to be unreliable.
 
-   The current release (1.0.0) has been tested **only on Linux** (CPython
+   The current release (1.1.0) has been tested **only on Linux** (CPython
    3.10-3.14). There is no CI coverage for Windows or macOS.
 
 Server Selection Guide

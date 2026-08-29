@@ -505,3 +505,147 @@ class TestEdgeCases:
         # Task should complete despite callback error
         await asyncio.wait_for(task, timeout=2.0)
         assert task.done()
+
+
+class TestFireAndForgetCall:
+    """``fire_and_forget_call`` — factory variant, added alongside (never
+    replacing) ``fire_and_forget_async``.
+
+    It exists because ``timeout`` cannot cover the creation of an awaitable
+    passed by value: a netref call in that position runs on the caller's
+    event loop before the task exists.
+    """
+
+    @pytest.mark.asyncio
+    async def test_factory_form_runs_and_reports(self):
+        from rpyc_async.utils.helpers import fire_and_forget_call
+
+        seen = []
+
+        async def worker():
+            return 7
+
+        async def on_success(result):
+            seen.append(result)
+
+        await fire_and_forget_call(lambda: worker(), success_callback=on_success)
+        assert seen == [7]
+
+    @pytest.mark.asyncio
+    async def test_factory_is_called_inside_the_task(self):
+        """Nothing runs until the task does — that is the entire point."""
+        from rpyc_async.utils.helpers import fire_and_forget_call
+
+        called = []
+
+        async def worker():
+            return 1
+
+        def factory():
+            called.append(True)
+            return worker()
+
+        task = fire_and_forget_call(factory)
+        assert called == [], "factory must not be invoked synchronously"
+        await task
+        assert called == [True]
+
+    @pytest.mark.asyncio
+    async def test_awaitable_argument_is_rejected(self):
+        """Passing an awaitable defeats the purpose, so it is refused."""
+        from rpyc_async.utils.helpers import fire_and_forget_call
+
+        async def worker():
+            return 1
+
+        coro = worker()
+        try:
+            with pytest.raises(TypeError) as excinfo:
+                fire_and_forget_call(coro)
+            msg = str(excinfo.value)
+            # The error must teach the fix and name the alternative.
+            assert "callable" in msg
+            assert "fire_and_forget_async" in msg
+        finally:
+            coro.close()
+
+    @pytest.mark.asyncio
+    async def test_timeout_covers_the_factory(self):
+        """A slow factory is bounded — unlike the by-value form."""
+        from rpyc_async.utils.helpers import fire_and_forget_call
+
+        errors = []
+
+        async def on_error(exc):
+            errors.append(exc)
+
+        def slow_factory():
+            async def _slow():
+                await asyncio.sleep(30)
+            return _slow()
+
+        await fire_and_forget_call(
+            slow_factory, timeout=0.1, error_callback=on_error
+        )
+        assert errors and isinstance(errors[0], asyncio.TimeoutError)
+
+    @pytest.mark.asyncio
+    async def test_errors_reach_the_error_callback(self):
+        from rpyc_async.utils.helpers import fire_and_forget_call
+
+        errors = []
+
+        async def on_error(exc):
+            errors.append(exc)
+
+        def factory():
+            async def _boom():
+                raise ValueError("nope")
+            return _boom()
+
+        await fire_and_forget_call(factory, error_callback=on_error)
+        assert errors and isinstance(errors[0], ValueError)
+
+
+class TestFireAndForgetAsyncBackwardCompatibility:
+    """The published 1.0 signature must keep working, unchanged.
+
+    rpyc-async is on PyPI; ``fire_and_forget_async`` is public API. The
+    event-loop hazard is documented on it and addressed by the additional
+    ``fire_and_forget_call``, NOT by changing this function.
+    """
+
+    @pytest.mark.asyncio
+    async def test_still_accepts_a_bare_awaitable(self):
+        from rpyc_async.utils.helpers import fire_and_forget_async
+
+        async def worker():
+            return 42
+
+        results = []
+
+        async def on_success(result):
+            results.append(result)
+
+        await fire_and_forget_async(worker(), success_callback=on_success)
+        assert results == [42]
+
+    @pytest.mark.asyncio
+    async def test_first_parameter_is_still_named_awaitable(self):
+        """Keyword callers (`fire_and_forget_async(awaitable=...)`) keep working."""
+        import inspect
+
+        from rpyc_async.utils.helpers import fire_and_forget_async
+
+        params = list(inspect.signature(fire_and_forget_async).parameters)
+        assert params[0] == "awaitable"
+
+    @pytest.mark.asyncio
+    async def test_does_not_reject_awaitables(self):
+        """No TypeError guard was added to the published function."""
+        from rpyc_async.utils.helpers import fire_and_forget_async
+
+        async def worker():
+            return 1
+
+        await fire_and_forget_async(worker(), timeout=5.0)

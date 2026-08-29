@@ -392,7 +392,7 @@ T = TypeVar('T')
 # reference to every Task it creates, until that Task is actually done.
 #
 # Production failure mode if this set is missing (observed in a
-# downstream service, 2026-04-27 first occurrence, 2026-05-08 recurrence):
+# downstream web application, two occurrences):
 #
 #   1. ``fire_and_forget_async(conn.root.foo(...), timeout=10, …)``
 #      creates a Task; the caller discards the returned reference.
@@ -643,12 +643,44 @@ def fire_and_forget_async(
 
     Supports both local coroutines and cross-process async RPC calls.
 
+    .. warning::
+
+       ``timeout`` cannot cover the creation of ``awaitable`` itself.
+
+       Python evaluates arguments before calling this function, so whatever
+       produced the awaitable has ALREADY run by the time we are entered --
+       on your event loop, outside the task, outside ``timeout``.
+
+       This matters for netrefs. ``conn.root.method`` is not a local lookup:
+       ``netref.__getattribute__`` issues a synchronous ``HANDLE_GETATTR``
+       round-trip, and ``sync_request`` waits for it by driving the socket
+       from ``AsyncResult.wait()`` (``while self._waiting():
+       self._conn.serve(...)``). Called on the loop that serves the same
+       connection, that starves every other coroutine -- including the timer
+       that was supposed to bound it -- until the peer answers or
+       ``sync_request_timeout`` (30 s) expires. A peer that is merely slow is
+       enough; it does not have to be dead::
+
+           # UNSAFE on the serving loop: the RPC happens HERE, not in the task
+           fire_and_forget_async(conn.root.get_status(), timeout=5.0)
+
+       Use :func:`fire_and_forget_call` for remote calls: it takes a factory,
+       so both the attribute lookup and the call happen inside the task::
+
+           fire_and_forget_call(
+               lambda: async_call(conn.root, "get_status"), timeout=5.0
+           )
+
+       This function remains fully supported and unchanged for local
+       coroutines and for any awaitable that is cheap to create.
+
     CRITICAL: This function uses asyncio.get_running_loop() to ensure
     we are operating in the main event loop. It will raise RuntimeError
     if no event loop is running. Never creates additional loops or threads.
 
     Args:
-        awaitable: Coroutine or AsyncResult to execute
+        awaitable: Coroutine or AsyncResult to execute. NOTE: creating it is
+            the caller's responsibility and is NOT covered by ``timeout``.
         timeout: Optional timeout in seconds
         success_callback: Async callback called with result on success
         error_callback: Async callback called with exception on failure
@@ -669,13 +701,19 @@ def fire_and_forget_async(
         >>> async def on_success(result):
         ...     await log_result(result)
         ...
-        >>> # Requires AsyncioServer on the other side
+        >>> # A local coroutine: creating it does no I/O, so this is safe.
         >>> task = fire_and_forget_async(
-        ...     conn.root.long_running_task(),
+        ...     my_worker(arg),
         ...     timeout=30.0,
         ...     success_callback=on_success,
         ...     error_callback=log_error,
         ... )
+
+        For a REMOTE call use :func:`fire_and_forget_call` instead -- see the
+        warning above.
+
+    See Also:
+        fire_and_forget_call: factory-taking variant, safe for netref calls.
     """
     # Verify we're in a running event loop (will raise if not)
     # CRITICAL: We must use get_running_loop() to ensure we're in the main loop
@@ -701,3 +739,103 @@ def fire_and_forget_async(
     _INFLIGHT.add(task)
     task.add_done_callback(_INFLIGHT.discard)
     return task
+
+
+def fire_and_forget_call(
+    make_awaitable: CallableType[[], Awaitable[T]],
+    *,
+    timeout: float | None = None,
+    success_callback: CallableType[[T], Awaitable[None]] | None = None,
+    error_callback: CallableType[[BaseException], Awaitable[None]] | None = None,
+    name: str | None = None,
+) -> asyncio.Task[None]:
+    """
+    Like :func:`fire_and_forget_async`, but takes a FACTORY instead of an
+    awaitable -- so ``timeout`` covers creating the awaitable too.
+
+    Use this for REMOTE calls. ``fire_and_forget_async(conn.root.method())``
+    performs the RPC while evaluating its own argument: on the loop that
+    serves that connection, before the task exists, and outside ``timeout``.
+    Against a peer that is slow to answer, that freezes the whole event loop
+    (see the warning on :func:`fire_and_forget_async` for the mechanism).
+
+    Passing a zero-argument callable moves BOTH the attribute lookup and the
+    call inside the background task, where ``timeout`` genuinely applies and
+    cancellation works::
+
+        fire_and_forget_call(
+            lambda: async_call(conn.root, "get_last_response"),
+            timeout=5.0,
+            success_callback=on_success,
+            error_callback=on_error,
+        )
+
+    Pair it with :func:`rpyc_async.core.netref.async_call`, which never
+    resolves the attribute locally: it sends a single HANDLE_ASYNC_CALLATTR
+    so getattr and call both happen on the peer, and the reply is delivered
+    event-driven -- no polling, no ``serve()`` loop, no blocking.
+
+    Args:
+        make_awaitable: Zero-argument callable returning a coroutine or
+            AsyncResult. Invoked inside the background task.
+        timeout: Optional timeout in seconds, covering creation AND await.
+        success_callback: Async callback called with result on success
+        error_callback: Async callback called with exception on failure
+        name: Optional task name for debugging
+
+    Returns:
+        asyncio.Task that can be optionally awaited or cancelled
+
+    Raises:
+        TypeError: If given an awaitable instead of a callable. This is a
+            guard, not a limitation: an awaitable argument would already
+            have been created by the caller, which is exactly the hazard
+            this function exists to avoid.
+        RuntimeError: If no event loop is running
+
+    Requirements:
+        - Must be called from within a running event loop (async context)
+        - For cross-process RPC: connection must use AsyncioServer
+        - For cross-process RPC: asyncio serving must be enabled on the
+          connection (``async_connect()`` does this automatically)
+
+    .. versionadded:: 1.1
+    """
+    if not callable(make_awaitable):
+        raise TypeError(
+            "fire_and_forget_call() requires a zero-argument callable that "
+            "RETURNS an awaitable, not an already-created awaitable.\n"
+            f"  got: {type(make_awaitable).__name__}\n"
+            "An awaitable argument is evaluated BEFORE this call, so a "
+            "blocking netref round-trip would happen on your event loop and "
+            "`timeout=` could not cover it -- the very thing this function "
+            "avoids.\n"
+            "  right: fire_and_forget_call(\n"
+            "             lambda: async_call(conn.root, 'method', arg),\n"
+            "             timeout=5,\n"
+            "         )\n"
+            "To pass an awaitable you already hold, use "
+            "fire_and_forget_async() instead.\n"
+            "See rpyc_async.core.netref.async_call."
+        )
+
+    async def _invoke() -> T:
+        # The factory runs INSIDE the task, so the remote call never touches
+        # the caller's event loop and is bounded by ``timeout`` below.
+        return await make_awaitable()
+
+    coro = _invoke()
+    try:
+        return fire_and_forget_async(
+            coro,
+            timeout=timeout,
+            success_callback=success_callback,
+            error_callback=error_callback,
+            name=name,
+        )
+    except BaseException:
+        # Never leak an un-awaited coroutine (e.g. no running event loop, or
+        # a patched/failing delegate): that would surface as a bare
+        # "coroutine was never awaited" RuntimeWarning far from the cause.
+        coro.close()
+        raise
