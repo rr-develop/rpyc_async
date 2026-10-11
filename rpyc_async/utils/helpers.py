@@ -679,8 +679,7 @@ def fire_and_forget_async(
     if no event loop is running. Never creates additional loops or threads.
 
     Args:
-        awaitable: Coroutine or AsyncResult to execute. NOTE: creating it is
-            the caller's responsibility and is NOT covered by ``timeout``.
+        awaitable: Coroutine or AsyncResult to execute (creating it is NOT covered by ``timeout``)
         timeout: Optional timeout in seconds
         success_callback: Async callback called with result on success
         error_callback: Async callback called with exception on failure
@@ -776,8 +775,7 @@ def fire_and_forget_call(
     event-driven -- no polling, no ``serve()`` loop, no blocking.
 
     Args:
-        make_awaitable: Zero-argument callable returning a coroutine or
-            AsyncResult. Invoked inside the background task.
+        make_awaitable: Zero-argument callable returning a coroutine or AsyncResult, invoked inside the task
         timeout: Optional timeout in seconds, covering creation AND await.
         success_callback: Async callback called with result on success
         error_callback: Async callback called with exception on failure
@@ -787,11 +785,12 @@ def fire_and_forget_call(
         asyncio.Task that can be optionally awaited or cancelled
 
     Raises:
-        TypeError: If given an awaitable instead of a callable. This is a
-            guard, not a limitation: an awaitable argument would already
-            have been created by the caller, which is exactly the hazard
-            this function exists to avoid.
+        TypeError: If given an awaitable (even a callable one) instead of a callable
         RuntimeError: If no event loop is running
+
+    The ``TypeError`` is a guard, not a limitation: an awaitable argument
+    would already have been created by the caller, which is exactly the
+    hazard this function exists to avoid.
 
     Requirements:
         - Must be called from within a running event loop (async context)

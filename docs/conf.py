@@ -104,6 +104,9 @@ linkcheck_ignore = [
     r"https?://pybuild\.sourceforge\.net(?:/.*)?$",
     # gevent.org rate-limits CI crawlers (HTTP 429); content verified manually.
     r"https?://(www\.)?gevent\.org(?:/.*)?$",
+    # web.archive.org rate-limits CI crawlers too (HTTP 429 until
+    # linkcheck_rate_limit_timeout, then "broken"); snapshots are immutable.
+    r"https?://web\.archive\.org(?:/.*)?$",
 ]
 
 # Cross-references to stdlib / third-party / private symbols that Sphinx
