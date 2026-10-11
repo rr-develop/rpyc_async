@@ -570,6 +570,26 @@ class TestFireAndForgetCall:
             coro.close()
 
     @pytest.mark.asyncio
+    async def test_callable_awaitable_argument_is_rejected(self):
+        """An awaitable that is ALSO callable is still refused.
+
+        ``AsyncResult`` -- what ``async_call`` returns for a netref -- defines
+        ``__call__`` (the reply-delivery hook), so a bare ``callable()`` guard
+        lets it through: ``fire_and_forget_call(async_call(conn.root, "m"))``
+        then fails inside the task with a confusing
+        ``AsyncResult.__call__() missing 2 required positional arguments``
+        instead of the TypeError that names the right form.
+        """
+        from rpyc_async.core.async_ import AsyncResult
+        from rpyc_async.utils.helpers import fire_and_forget_call
+
+        with pytest.raises(TypeError) as excinfo:
+            fire_and_forget_call(AsyncResult(None))
+        msg = str(excinfo.value)
+        assert "callable" in msg
+        assert "fire_and_forget_async" in msg
+
+    @pytest.mark.asyncio
     async def test_timeout_covers_the_factory(self):
         """A slow factory is bounded — unlike the by-value form."""
         from rpyc_async.utils.helpers import fire_and_forget_call

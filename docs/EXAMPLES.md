@@ -183,14 +183,17 @@ asyncio.run(main())
 ```python
 import asyncio
 import rpyc_async as rpyc
+from rpyc_async.core.netref import async_call
 
 async def main():
     conn = await rpyc.async_connect("localhost", 18861)
 
     try:
-        # Set timeout using asyncio.wait_for
+        # Set timeout using asyncio.wait_for. Use async_call (1.1+): with
+        # `conn.root.async_slow_method()` the attribute lookup would run as a
+        # blocking round-trip BEFORE wait_for starts its timer.
         result = await asyncio.wait_for(
-            conn.root.async_slow_method(),
+            async_call(conn.root, "async_slow_method"),
             timeout=5.0  # 5 second timeout
         )
         print(f"Result: {result}")
@@ -297,18 +300,26 @@ asyncio.run(main())
 ### Fire-and-Forget Calls
 
 Sometimes you want to start a remote call and move on without awaiting its
-result. Both helpers schedule the awaitable on the running loop and hand you
-the `asyncio.Task`, routing the outcome to callbacks.
+result. The helpers schedule the call on the running loop and hand you the
+`asyncio.Task`, routing the outcome to callbacks.
 
 > Import from `rpyc_async.utils.helpers` — these helpers are **not** re-exported at
 > the `rpyc_async` top level.
 
-| | callbacks | use when |
-|---|---|---|
-| `fire_and_forget_async()` | `async def` | almost always — anything that logs, alerts, or makes another RPC |
-| `fire_and_forget()` | plain `def` | the callback is pure CPU work and cannot `await` |
+| | takes | callbacks | use when |
+|---|---|---|---|
+| `fire_and_forget_call()` *(1.1+)* | a factory | `async def` | **remote calls** — `timeout=` covers the whole call |
+| `fire_and_forget_async()` | an awaitable | `async def` | local coroutines, or an awaitable you already hold |
+| `fire_and_forget()` | an awaitable | plain `def` | the callback is pure CPU work and cannot `await` |
 
-**Reach for `fire_and_forget_async()` by default.** A sync callback cannot
+**For a remote call, pass a factory built on `netref.async_call()`:**
+`fire_and_forget_call(lambda: async_call(peer, "method", arg), timeout=...)`.
+Writing `fire_and_forget_async(peer.method(arg))` instead evaluates
+`peer.method` — a blocking attribute round-trip — on your loop before the
+helper even runs, outside `timeout`. See the
+[Fire-and-Forget Guide](guide_fire_and_forget.md#remote-calls).
+
+**Otherwise, reach for `fire_and_forget_async()` by default.** A sync callback cannot
 `await`, so it cannot do the one thing callbacks usually need to do: talk to
 something. If you find yourself calling `asyncio.create_task()` from inside a
 sync callback, you wanted `fire_and_forget_async()`.
@@ -322,7 +333,8 @@ must not freeze the others, and must not freeze the caller.
 import asyncio
 import json
 import rpyc_async as rpyc
-from rpyc_async.utils.helpers import fire_and_forget_async
+from rpyc_async.core.netref import async_call
+from rpyc_async.utils.helpers import fire_and_forget_call
 
 PUSH_TIMEOUT = 10.0
 
@@ -346,8 +358,12 @@ class Hub(rpyc.Service):
                 # An async callback can do real work — here, drop the peer.
                 await self._drop(sub, exc)
 
-            fire_and_forget_async(
-                subscriber.on_message(payload),
+            # A factory, not `subscriber.on_message(payload)`: looking up
+            # `on_message` on the netref is itself a blocking round-trip to
+            # that subscriber, on THIS loop. async_call sends lookup and call
+            # as one request; the factory runs inside the task, under timeout.
+            fire_and_forget_call(
+                lambda sub=subscriber: async_call(sub, "on_message", payload),
                 timeout=PUSH_TIMEOUT,
                 error_callback=on_error,
                 name=f"push-{id(subscriber)}",
@@ -364,10 +380,14 @@ Three things are load-bearing here:
 1. **The call returns immediately.** `exposed_broadcast` does not await any
    subscriber, so one hung peer cannot stall the rest — or the caller.
    Measured with one healthy and one permanently-hung subscriber:
-   `broadcast()` returns in 0.05 s, not in 3600 s.
+   `broadcast()` returns in 0.001 s, not in 3600 s. (With
+   `subscriber.on_message(payload)` passed by value it took 0.05 s — two
+   blocking lookups — and a subscriber that is slow to answer a lookup would
+   have frozen the hub for up to `sync_request_timeout`.)
 2. **`timeout=` is not optional.** Without it a subscriber whose `on_message`
    never resolves parks its task *forever*, and every later broadcast adds
-   another. With it, each task settles and releases its slot — the hung peer
+   another. Because the factory runs inside the task, the timeout covers the
+   whole push, not just the wait for the reply. With it, each task settles and releases its slot — the hung peer
    above raises `TimeoutError` into `on_error` and gets dropped.
 3. **`async def on_error`.** Dropping a dead subscriber may itself need to
    `await`. `fire_and_forget()` could not express this.
@@ -388,7 +408,8 @@ Two footguns this example sidesteps:
 ```python
 import asyncio
 import rpyc_async as rpyc
-from rpyc_async.utils.helpers import fire_and_forget_async
+from rpyc_async.core.netref import async_call
+from rpyc_async.utils.helpers import fire_and_forget, fire_and_forget_call
 
 async def on_success(result):
     await log_to_db(result)
@@ -400,25 +421,25 @@ async def main():
     conn = await rpyc.async_connect("localhost", 18861)
     try:
         # 1. Start a call and keep going.
-        fire_and_forget_async(
-            conn.root.slow_job(4),
+        fire_and_forget_call(
+            lambda: async_call(conn.root, "slow_job", 4),
             success_callback=on_success,
             error_callback=on_error,
             name="slow_job",
         )
 
         # 2. Give up after 0.3 s — on_error receives a TimeoutError.
-        fire_and_forget_async(
-            conn.root.very_slow_job(),
+        fire_and_forget_call(
+            lambda: async_call(conn.root, "very_slow_job"),
             timeout=0.3,
             error_callback=on_error,
         )
 
         # 3. The returned Task is a normal asyncio.Task: await it or cancel it.
-        task = fire_and_forget_async(conn.root.slow_job(1))
+        task = fire_and_forget_call(lambda: async_call(conn.root, "slow_job", 1))
         await task
 
-        other = fire_and_forget_async(conn.root.very_slow_job())
+        other = fire_and_forget_call(lambda: async_call(conn.root, "very_slow_job"))
         other.cancel()  # CancelledError is NOT routed to error_callback
 
         await asyncio.sleep(1)
@@ -428,7 +449,8 @@ async def main():
 asyncio.run(main())
 ```
 
-Use `fire_and_forget()` only when the callbacks are plain functions:
+Use `fire_and_forget()` only when the callbacks are plain functions. It takes
+an awaitable; `async_call()` creates one without blocking:
 
 ```python
 from rpyc_async.utils.helpers import fire_and_forget
@@ -436,12 +458,18 @@ from rpyc_async.utils.helpers import fire_and_forget
 def on_success(result):
     counters["done"] += 1     # pure CPU, no await needed
 
-fire_and_forget(conn.root.slow_job(7), success_callback=on_success)
+fire_and_forget(async_call(conn.root, "slow_job", 7), success_callback=on_success)
 ```
 
 **Notes:**
-- Both helpers raise `RuntimeError` if no event loop is running.
-- **You do not need to hold the returned task.** Both helpers keep a strong
+- `async_call()` needs an `AsyncioServer` peer, for plain `def` methods too.
+  Against a `ThreadedServer` it never resolves — another reason to pass
+  `timeout=`.
+- `fire_and_forget_call()` rejects an awaitable argument (including the
+  result of `async_call(...)`) with a `TypeError` naming the right form.
+- In a loop, bind the variable: `lambda i=i: async_call(conn.root, "job", i)`.
+- All helpers raise `RuntimeError` if no event loop is running.
+- **You do not need to hold the returned task.** Every helper keeps a strong
   reference to it internally until it finishes, so a GC pass cannot silently
   kill a half-finished call. Discarding the return value is safe; keep it only
   if you intend to `await` or `cancel()` it.
@@ -463,7 +491,10 @@ fire_and_forget(conn.root.slow_job(7), success_callback=on_success)
 Await the tasks (or cancel them) before `await conn.aclose()`:
 
 ```python
-tasks = [fire_and_forget_async(conn.root.slow_job(i)) for i in range(5)]
+tasks = [
+    fire_and_forget_call(lambda i=i: async_call(conn.root, "slow_job", i))
+    for i in range(5)
+]
 await asyncio.gather(*tasks, return_exceptions=True)
 await conn.aclose()
 ```

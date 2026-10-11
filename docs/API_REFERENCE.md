@@ -291,6 +291,46 @@ async def main():
 > Store the wrapper returned by `rpyc.async_()` in a variable rather than
 > calling it inline: the wrapper is cached behind a weak reference.
 
+**Calling without a blocking attribute lookup — `netref.async_call()` (1.1+):**
+
+Every attribute lookup on a netref (`conn.root.async_hello`) is a synchronous
+`HANDLE_GETATTR` round-trip, performed on your event loop before the call is
+even made. The `sync_request` guard deliberately lets it through, and while it
+waits the loop serves nothing else, its own timers included — until the peer
+answers or `sync_request_timeout` (30 s by default) expires. Against a peer
+that is slow to answer, `await conn.root.method()` therefore freezes the
+caller's loop. `async_call` avoids the lookup entirely:
+
+```python
+from rpyc_async.core.netref import async_call
+
+async def main():
+    conn = await rpyc.async_connect("localhost", 18861)
+    try:
+        # One HANDLE_ASYNC_CALLATTR: lookup and call both happen on the peer
+        result = await async_call(conn.root, "async_hello", "world")
+
+        # Works for plain `def` methods too -- no rpyc.async_() needed
+        print(await async_call(conn.root, "sync_hello", "world"))
+
+        # A normal awaitable: asyncio.wait_for can actually fire
+        result = await asyncio.wait_for(
+            async_call(conn.root, "async_hello", "world"), timeout=5.0
+        )
+    finally:
+        await conn.aclose()
+```
+
+`async_call(proxy, name, *args, **kwargs)` takes the method name as a string —
+`proxy.name` would reintroduce the lookup. It requires asyncio serving on the
+connection (`async_connect()` enables it) and an **`AsyncioServer` peer**, for
+plain `def` methods as well: a `ThreadedServer` cannot dispatch the async
+request, drops the connection, and the call never resolves — bound it with a
+timeout. Against a peer running 1.0.0, call methods by their full
+`exposed_` name: the short-name lookup is a 1.1 fix on the serving side (see
+[Compatibility](#compatibility)). Plain (non-netref) objects fall back to a
+direct, lazily invoked local call.
+
 **Concurrent Async Calls:**
 ```python
 async def main():
@@ -306,34 +346,47 @@ async def main():
         await conn.aclose()
 ```
 
-**Fire-and-forget:** to start a remote async call and not wait for it, use
-`fire_and_forget_async()` (async callbacks) or, when the callback cannot
-`await`, `fire_and_forget()` (sync callbacks). Both return an `asyncio.Task`
-that resolves to `None`, never to the call's result — read the value from
-`success_callback`. You do **not** need to keep a reference to the task: each
-helper pins it internally until it settles. Keep it only to `await` or
-`cancel()` it.
+**Fire-and-forget:** to start a remote call and not wait for it, use
+`fire_and_forget_call()` (1.1+) with a factory built on `async_call()`. The
+factory runs inside the background task, so `timeout=` covers the whole call:
 
 ```python
-from rpyc_async.utils.helpers import fire_and_forget_async
+from rpyc_async.core.netref import async_call
+from rpyc_async.utils.helpers import fire_and_forget_call
 
 async def on_success(result):
     await log(result)
 
-task = fire_and_forget_async(
-    conn.root.long_running_task(),
+task = fire_and_forget_call(
+    lambda: async_call(conn.root, "long_running_task"),
     timeout=30.0,
     success_callback=on_success,
     error_callback=log_error,
 )
 ```
 
-Both require a running event loop, and are imported from `rpyc_async.utils.helpers`,
-not from the `rpyc_async` top level.
+Do **not** write `fire_and_forget_async(conn.root.long_running_task(), timeout=30.0)`:
+Python evaluates `conn.root.long_running_task()` — including its blocking
+attribute lookup — on your loop before the helper runs, outside `timeout`.
+`fire_and_forget_call()` rejects an awaitable argument with a `TypeError` that
+names the right form.
 
-The peer needs `AsyncioServer` only if the remote method is `async def`. A
-`ThreadedServer` exposing a plain `def` works too — wrap the netref so the call
-becomes an awaitable rather than a blocking `sync_request`:
+`fire_and_forget_async()` (async callbacks) and `fire_and_forget()` (sync
+callbacks) take an awaitable and remain the tools for local coroutines, or for
+an awaitable you already hold — e.g. `fire_and_forget(async_call(conn.root,
+"job", 1), timeout=5.0)` when the callbacks must be plain `def`. All three
+return an `asyncio.Task` that resolves to `None`, never to the call's result —
+read the value from `success_callback`. You do **not** need to keep a reference
+to the task: each helper pins it internally until it settles. Keep it only to
+`await` or `cancel()` it.
+
+All three require a running event loop, and are imported from
+`rpyc_async.utils.helpers`, not from the `rpyc_async` top level.
+
+`async_call()` needs an `AsyncioServer` peer. With a `ThreadedServer` exposing
+a plain `def`, wrap the netref so the call becomes an awaitable rather than a
+blocking `sync_request` — keeping in mind that the lookup `conn.root.sync_method`
+itself still blocks your loop for one round-trip:
 
 ```python
 task = fire_and_forget_async(rpyc.async_(conn.root.sync_method)(arg), timeout=5.0)
@@ -341,6 +394,8 @@ task = fire_and_forget_async(rpyc.async_(conn.root.sync_method)(arg), timeout=5.
 
 Always pass `timeout=`: without it, a call whose reply never arrives leaves its
 task pinned for the lifetime of the process.
+
+See [`guide_fire_and_forget.md`](guide_fire_and_forget.md) for the full guide.
 
 ---
 
@@ -482,6 +537,16 @@ protocol level nor at the API level. Both peers must run `rpyc-async`.
 - Async methods require `rpyc-async` on both client and server
 - Within `rpyc-async`, a service may expose sync and async methods side by side
 - Connecting to or from a classic synchronous RPyC peer is unsupported
+
+### Mixing 1.0 and 1.1 peers
+
+1.1 fixed `HANDLE_ASYNC_CALLATTR` on the **serving** side: it now honours the
+`exposed_` prefix, `_rpyc_getattr` hooks and the `allow_getattr` /
+`allow_*_attrs` checks, exactly like the synchronous path. A 1.0.0 server still
+resolves by bare `getattr`, so a 1.1 client calling it with
+`async_call(conn.root, "foo")` gets `AttributeError` until the server is
+upgraded. Upgrade servers first, or call `async_call(conn.root, "exposed_foo")`
+meanwhile.
 
 ---
 

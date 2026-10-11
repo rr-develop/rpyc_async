@@ -2,7 +2,7 @@
 
 ## Overview
 
-`rpyc-async` 1.0.0 (asyncio-native fork of upstream RPyC) provides async/await support with the following status:
+`rpyc-async` 1.1.0 (asyncio-native fork of upstream RPyC) provides async/await support with the following status:
 
 > **Note:** `rpyc-async` is an independent distribution (`pip install rpyc-async`, import name `rpyc_async`; use `import rpyc_async as rpyc` to keep the shorter spelling in existing code).
 > Backward compatibility with classic synchronous RPyC is **not** guaranteed.
@@ -16,6 +16,10 @@
 **❌ ThreadedServer Cannot Support:**
 - Bidirectional async callbacks (Server ↔ Client)
 - Server-side concurrency
+- `netref.async_call()` (1.1+), even for plain `def` methods
+
+**⚠️ Any server:** attribute access on a netref is a blocking round-trip —
+see [Netref Attribute Access Blocks the Event Loop](#4-netref-attribute-access-blocks-the-event-loop).
 
 **✅ Solution: AsyncioServer**
 - Already implemented in `rpyc_async.utils.async_server`
@@ -375,6 +379,57 @@ async def exposed_get_items(self):
 
 ---
 
+### 4. Netref Attribute Access Blocks the Event Loop
+
+**Status:** ⚠️ By design (any server) — use `netref.async_call()` (1.1+)
+
+`conn.root.method` is not a local lookup. `netref.__getattribute__` always
+issues a synchronous `HANDLE_GETATTR` request and waits for the reply by
+driving the socket itself. On the event loop that serves the connection,
+nothing else runs meanwhile — no other coroutine, not even the loop's own
+timers — until the peer answers or `sync_request_timeout` (30 s by default)
+expires.
+
+The `sync_request` guard that rejects blocking user-level RPC on the serving
+loop deliberately lets `HANDLE_GETATTR` through, assuming it is short. It is
+not guaranteed to be: the peer resolves the attribute by running arbitrary
+code (`__getattr__`, `_rpyc_getattr`, descriptors), so a peer that is merely
+slow — not dead — freezes the caller. This is why
+
+```python
+await asyncio.wait_for(conn.root.method(), timeout=5.0)   # timeout cannot fire
+fire_and_forget_async(conn.root.method(), timeout=5.0)     # lookup runs outside timeout
+```
+
+are not bounded the way they look: the lookup happens before the timer exists.
+
+**Solution:** call by name with `async_call()`, which sends lookup and call
+as one `HANDLE_ASYNC_CALLATTR` request and returns a normal, cancellable
+awaitable:
+
+```python
+from rpyc_async.core.netref import async_call
+from rpyc_async.utils.helpers import fire_and_forget_call
+
+result = await asyncio.wait_for(async_call(conn.root, "method", arg), timeout=5.0)
+
+fire_and_forget_call(lambda: async_call(conn.root, "method", arg), timeout=5.0)
+```
+
+**Requirements and caveats:**
+- The peer must be an `AsyncioServer` — for plain `def` methods as well. A
+  `ThreadedServer` cannot dispatch the async request; it drops the connection
+  and the call never resolves, so always bound it with a timeout.
+- **Mixed versions:** the short-name resolution of `HANDLE_ASYNC_CALLATTR`
+  (honouring the `exposed_` prefix and the `allow_*` checks) is a 1.1 fix on the
+  serving side. Against a 1.0.0 server, `async_call(conn.root, "foo")` raises
+  `AttributeError`; call `async_call(conn.root, "exposed_foo")` until the server
+  is upgraded.
+- With a `ThreadedServer` there is no non-blocking form: `rpyc.async_(conn.root.foo)`
+  still performs the lookup synchronously. Keep such peers fast to answer.
+
+---
+
 ## 📋 Server Comparison Matrix
 
 | Feature | ThreadedServer | AsyncioServer |
@@ -383,6 +438,7 @@ async def exposed_get_items(self):
 | **Unidirectional Async** | ❌ **`RuntimeError`** | ✅ Works |
 | **Bidirectional Async** | ❌ **`RuntimeError`** | ✅ **WORKS** |
 | **Server Concurrency** | ❌ Sequential | ✅ Concurrent |
+| **`netref.async_call()`** (1.1+) | ❌ Never resolves | ✅ Works (`def` and `async def`) |
 | **Event Loop** | None | **Persistent** |
 | **I/O Mode** | Blocking | **Non-blocking** |
 | **Client entry point** | `rpyc.connect()` | `await async_connect()` |
@@ -428,7 +484,9 @@ If you cannot migrate the server yet, keep every `exposed_*` method
 ✅ **Use AsyncioServer** for bidirectional async
 ✅ Use async for I/O-bound operations (network, database, files)
 ✅ Use `asyncio.gather()` for concurrent operations
-✅ Set timeouts with `asyncio.wait_for()`
+✅ Set timeouts with `asyncio.wait_for()` — around `async_call()`, so the timeout can fire
+✅ Call remote methods by name with `netref.async_call()` (1.1+) on an `AsyncioServer` peer
+✅ Use `fire_and_forget_call()` (1.1+) for remote fire-and-forget calls
 ✅ Reuse connections
 
 ### DON'T:
@@ -438,6 +496,7 @@ If you cannot migrate the server yet, keep every `exposed_*` method
 ❌ Don't call `conn.close()` from async code — use `await conn.aclose()`
 ❌ Don't call `conn.enable_asyncio_serving()` by hand — `async_connect()` does it
 ❌ Don't use blocking calls in async methods (`time.sleep()`)
+❌ Don't pass `conn.root.method()` to `fire_and_forget_async()` — the lookup runs before the helper, outside `timeout`
 ❌ Don't create new connection per request
 ❌ Don't poll for results — replies arrive via `loop.add_reader()`
 

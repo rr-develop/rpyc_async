@@ -1,6 +1,6 @@
 1.1.0 (rpyc-async)
 ==================
-Date: 2026-08-29
+Date: 2026-10-11
 
 - ``netref.async_call(proxy, name, *args, **kwargs)``: call a remote method
   without ever blocking the caller's event loop. Attribute lookup on a netref
@@ -13,13 +13,17 @@ Date: 2026-08-29
   happen on the peer and the reply arrives event-driven; the result is a
   normal awaitable, so it is cancellable and ``asyncio.wait_for`` can
   actually fire. Plain (non-netref) objects fall back to a direct, lazily
-  invoked call.
+  invoked call. The peer must be an ``AsyncioServer`` — for plain ``def``
+  methods too: a ``ThreadedServer`` cannot dispatch the async request, drops
+  the connection, and the call never resolves.
 - ``utils.helpers.fire_and_forget_call``: a variant of ``fire_and_forget_async``
   that takes a FACTORY (zero-argument callable returning an awaitable) instead
   of an awaitable, so ``timeout`` covers creating the awaitable as well.
   ``fire_and_forget_async`` is UNCHANGED and remains fully supported; the
   hazard of passing an already-created remote call to it is now documented on
-  the function itself.
+  the function itself. Any awaitable argument — including the ``AsyncResult``
+  returned by ``async_call`` — is rejected with a ``TypeError`` naming the
+  factory form.
 - Fixed ``HANDLE_ASYNC_CALLATTR`` resolving attributes with a bare ``getattr``,
   which bypassed the ``exposed_`` prefix, ``_rpyc_getattr`` hooks and the
   ``allow_getattr`` / ``allow_*_attrs`` permission checks that the synchronous
@@ -27,7 +31,13 @@ Date: 2026-08-29
   ``Service`` exposing ``exposed_foo`` could not be called as ``foo``) and a
   security one. NOTE: this fix lives on the SERVING side — a peer running
   1.0.0 still resolves by bare ``getattr``, so a 1.1 client calling a 1.0
-  server by short name raises ``AttributeError`` until the server is upgraded.
+  server by short name raises ``AttributeError`` until the server is upgraded;
+  call it by the full ``exposed_`` name meanwhile.
+- Documentation: the fire-and-forget guide, API reference, examples and
+  limitations now use ``async_call`` / ``fire_and_forget_call`` for remote
+  calls and explain why ``fire_and_forget_async(conn.root.method())`` and
+  ``asyncio.wait_for(conn.root.method(), ...)`` are not bounded by their
+  timeout.
 
 1.0.0 (rpyc-async)
 ==================

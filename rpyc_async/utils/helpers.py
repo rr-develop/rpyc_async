@@ -801,7 +801,10 @@ def fire_and_forget_call(
 
     .. versionadded:: 1.1
     """
-    if not callable(make_awaitable):
+    # Check awaitability FIRST: ``AsyncResult`` (what ``async_call`` returns
+    # for a netref) is both awaitable and callable -- its ``__call__`` is the
+    # reply-delivery hook -- so ``callable()`` alone would let it through.
+    if inspect.isawaitable(make_awaitable) or not callable(make_awaitable):
         raise TypeError(
             "fire_and_forget_call() requires a zero-argument callable that "
             "RETURNS an awaitable, not an already-created awaitable.\n"

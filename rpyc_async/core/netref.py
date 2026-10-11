@@ -129,6 +129,15 @@ def async_call(proxy, name, *args, **kwargs):
     Requires asyncio serving to be enabled on the connection, which
     ``async_connect()`` does automatically.
 
+    The PEER must serve asyncio too (``AsyncioServer``): this holds for
+    ``def`` methods as well as ``async def`` ones, because the request itself
+    is an async one. A ``ThreadedServer`` peer cannot dispatch it -- its
+    handler raises ``RuntimeError: Async method requires persistent event
+    loop`` and drops the connection, while the awaiting caller is left with
+    a reply that never arrives. Bound the call (``asyncio.wait_for`` /
+    ``fire_and_forget_call(timeout=...)``) so that case ends in
+    ``TimeoutError`` instead of a hang.
+
     Example::
 
         result = await asyncio.wait_for(
